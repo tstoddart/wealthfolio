@@ -959,7 +959,7 @@ export interface Settings {
   /** Formatting regions for amounts in specific currencies, keyed by currency code. */
   currencyFormattingRegions?: Record<string, string>;
   baseCurrency: string;
-  defaultReturnMetric: "twr" | "irr" | "valueReturn";
+  defaultReturnMetric: "twr" | "modifiedDietz" | "irr" | "valueReturn";
   timezone: string;
   onboardingCompleted: boolean;
   autoUpdateCheckEnabled: boolean;

@@ -245,6 +245,7 @@ async fn build_context(
     let base_currency_string = settings.base_currency.clone();
     let base_currency = Arc::new(RwLock::new(base_currency_string.clone()));
     let timezone = Arc::new(RwLock::new(settings.timezone.clone()));
+    let return_metric = Arc::new(RwLock::new(settings.default_return_metric.clone()));
     let rating_instance_id = Arc::new(
         settings_service
             .get_setting_value("instance_id")?
@@ -550,9 +551,10 @@ async fn build_context(
         None
     };
 
-    let performance_service = Arc::new(PerformanceService::new(
+    let performance_service = Arc::new(PerformanceService::new_with_return_metric(
         base_currency.clone(),
         timezone.clone(),
+        return_metric.clone(),
         fact_sources.clone(),
         valuation_repository.clone(),
         lots_repository.clone(),
@@ -768,6 +770,7 @@ async fn build_context(
             secret_store: secret_store.clone(),
             base_currency,
             timezone,
+            return_metric,
             rating_instance_id,
             domain_event_sink,
             settings_service,

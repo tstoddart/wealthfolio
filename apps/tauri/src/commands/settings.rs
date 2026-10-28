@@ -106,6 +106,8 @@ pub async fn update_settings(
         }
     }
 
+    context.update_return_metric(updated_settings.default_return_metric.clone());
+
     // If the base currency was changed, update the state and emit the event
     if base_currency_changed {
         debug!(

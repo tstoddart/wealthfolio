@@ -267,6 +267,7 @@ struct ReadSettings {
 pub struct PerformanceService {
     base_currency: Arc<RwLock<String>>,
     timezone: Arc<RwLock<String>>,
+    return_metric: Arc<RwLock<String>>,
     sources: FactSources,
     quotes: Arc<dyn QuoteServiceTrait>,
     valuations: Arc<dyn ValuationRepositoryTrait>,
@@ -281,10 +282,29 @@ impl PerformanceService {
         valuations: Arc<dyn ValuationRepositoryTrait>,
         lots: Arc<dyn LotRepositoryTrait>,
     ) -> Self {
+        Self::new_with_return_metric(
+            base_currency,
+            timezone,
+            Arc::new(RwLock::new("twr".to_string())),
+            sources,
+            valuations,
+            lots,
+        )
+    }
+
+    pub fn new_with_return_metric(
+        base_currency: Arc<RwLock<String>>,
+        timezone: Arc<RwLock<String>>,
+        return_metric: Arc<RwLock<String>>,
+        sources: FactSources,
+        valuations: Arc<dyn ValuationRepositoryTrait>,
+        lots: Arc<dyn LotRepositoryTrait>,
+    ) -> Self {
         let quotes = sources.quotes.clone();
         Self {
             base_currency,
             timezone,
+            return_metric,
             sources,
             quotes,
             valuations,
@@ -304,6 +324,38 @@ impl PerformanceService {
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    fn return_metric(&self) -> String {
+        self.return_metric
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    fn effective_summary_profile(
+        &self,
+        profile: PerformanceSummaryProfile,
+    ) -> PerformanceSummaryProfile {
+        if self.return_metric() == "modifiedDietz" {
+            match profile {
+                PerformanceSummaryProfile::Full => PerformanceSummaryProfile::Dietz,
+                PerformanceSummaryProfile::Summary | PerformanceSummaryProfile::Dashboard => {
+                    PerformanceSummaryProfile::DietzSummary
+                }
+                other => other,
+            }
+        } else {
+            profile
+        }
+    }
+
+    fn effective_history_profile(&self) -> PerformanceSummaryProfile {
+        if self.return_metric() == "modifiedDietz" {
+            PerformanceSummaryProfile::Dietz
+        } else {
+            PerformanceSummaryProfile::Full
+        }
     }
 
     fn today(&self) -> NaiveDate {
@@ -380,14 +432,14 @@ impl PerformanceService {
             settings.as_of,
         )?;
 
-        let mut valuation_rows: Vec<DailyAccountValuation> = Vec::new();
+        let fetch_start = start.map(|s| s - Duration::days(7));
+        let valuation_rows = self
+            .valuations
+            .get_historical_valuations_for_accounts(account_ids, fetch_start, end)?;
+
         let mut lot_rows = Vec::new();
         let mut disposal_rows = Vec::new();
         for account_id in account_ids {
-            valuation_rows.extend(
-                self.valuations
-                    .get_historical_valuations(account_id, None, None)?,
-            );
             lot_rows.extend(self.lots.get_all_lots_for_account(account_id).await?);
             disposal_rows.extend(self.lots.get_lot_disposals_for_account(account_id).await?);
         }
@@ -400,6 +452,8 @@ impl PerformanceService {
             PerformanceSummaryProfile::Full => engine::MeasureProfile::Full,
             PerformanceSummaryProfile::Summary => engine::MeasureProfile::Summary,
             PerformanceSummaryProfile::Dashboard => engine::MeasureProfile::Dashboard,
+            PerformanceSummaryProfile::Dietz => engine::MeasureProfile::Dietz,
+            PerformanceSummaryProfile::DietzSummary => engine::MeasureProfile::DietzSummary,
         };
         let inputs = measured.measure_inputs(&series, &lots, &disposals, &rejected, kernel_profile);
         let result = match target {
@@ -510,6 +564,7 @@ impl PerformanceService {
 fn return_method(method: engine::model::ReturnMethod) -> ReturnMethod {
     match method {
         engine::model::ReturnMethod::TimeWeighted => ReturnMethod::TimeWeighted,
+        engine::model::ReturnMethod::ModifiedDietz => ReturnMethod::ModifiedDietz,
         engine::model::ReturnMethod::ValueReturn => ReturnMethod::ValueReturn,
         engine::model::ReturnMethod::SymbolPriceBased => ReturnMethod::SymbolPriceBased,
         engine::model::ReturnMethod::NotApplicable => ReturnMethod::NotApplicable,
@@ -570,6 +625,8 @@ pub fn from_kernel(result: engine::model::PerformanceResult) -> PerformanceResul
         returns: PerformanceReturns {
             twr: result.returns.twr,
             annualized_twr: result.returns.annualized_twr,
+            modified_dietz: result.returns.modified_dietz,
+            annualized_modified_dietz: result.returns.annualized_modified_dietz,
             irr: result.returns.irr,
             annualized_irr: result.returns.annualized_irr,
             value_return: result.returns.value_return,
@@ -637,11 +694,12 @@ impl PerformanceServiceTrait for PerformanceService {
     ) -> Result<PerformanceResult> {
         match item_type {
             "account" => {
+                let history_profile = self.effective_history_profile();
                 self.measure(
                     MeasureTarget::Account(item_id.to_string()),
                     start_date,
                     end_date,
-                    PerformanceSummaryProfile::Full,
+                    history_profile,
                     true,
                 )
                 .await
@@ -672,6 +730,7 @@ impl PerformanceServiceTrait for PerformanceService {
                 "Performance unavailable: no accounts selected.",
             ));
         }
+        let history_profile = self.effective_history_profile();
         self.measure(
             MeasureTarget::Scope {
                 id: scope_id.to_string(),
@@ -679,7 +738,7 @@ impl PerformanceServiceTrait for PerformanceService {
             },
             start_date,
             end_date,
-            PerformanceSummaryProfile::Full,
+            history_profile,
             true,
         )
         .await
@@ -695,13 +754,14 @@ impl PerformanceServiceTrait for PerformanceService {
         account_type: Option<&str>,
         profile: PerformanceSummaryProfile,
     ) -> Result<PerformanceResult> {
+        let eff_profile = self.effective_summary_profile(profile);
         match item_type {
             "account" => {
                 self.measure(
                     MeasureTarget::Account(item_id.to_string()),
                     start_date,
                     end_date,
-                    profile,
+                    eff_profile,
                     false,
                 )
                 .await
@@ -740,6 +800,7 @@ impl PerformanceServiceTrait for PerformanceService {
                 "Performance unavailable: no accounts selected.",
             ));
         }
+        let eff_profile = self.effective_summary_profile(profile);
         self.measure(
             MeasureTarget::Scope {
                 id: scope_id.to_string(),
@@ -747,7 +808,7 @@ impl PerformanceServiceTrait for PerformanceService {
             },
             start_date,
             end_date,
-            profile,
+            eff_profile,
             false,
         )
         .await

@@ -14,6 +14,7 @@ use super::valuation::BasisStatus;
 pub enum ReturnMethod {
     #[default]
     TimeWeighted,
+    ModifiedDietz,
     ValueReturn,
     /// Price-only return of a quoted symbol (no cash flows).
     SymbolPriceBased,
@@ -53,6 +54,10 @@ pub struct Returns {
     pub twr: Option<Decimal>,
     #[serde(default, with = "crate::model::decimal_serde::option")]
     pub annualized_twr: Option<Decimal>,
+    #[serde(default, with = "crate::model::decimal_serde::option")]
+    pub modified_dietz: Option<Decimal>,
+    #[serde(default, with = "crate::model::decimal_serde::option")]
+    pub annualized_modified_dietz: Option<Decimal>,
     /// Period money-weighted return derived from the annualized XIRR.
     #[serde(default, with = "crate::model::decimal_serde::option")]
     pub irr: Option<Decimal>,

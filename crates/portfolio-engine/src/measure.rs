@@ -86,12 +86,29 @@ impl MeasureInputs<'_> {
 /// `Summary` skips IRR, annualisation and risk; `Dashboard`
 /// additionally reports the exact value change net of flows as the headline
 /// amount and skips attribution, as the legacy dashboard cards did.
+/// `Dietz` computes Modified Dietz with stepped daily series;
+/// `DietzSummary` computes fast Modified Dietz summary without series/risk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MeasureProfile {
     #[default]
     Full,
     Summary,
     Dashboard,
+    Dietz,
+    DietzSummary,
+}
+
+impl MeasureProfile {
+    pub fn is_dietz(self) -> bool {
+        matches!(self, MeasureProfile::Dietz | MeasureProfile::DietzSummary)
+    }
+
+    pub fn is_summary_or_dashboard(self) -> bool {
+        matches!(
+            self,
+            MeasureProfile::Summary | MeasureProfile::Dashboard | MeasureProfile::DietzSummary
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +118,7 @@ enum Baseline {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PeriodFlow {
+pub(crate) struct PeriodFlow {
     date: NaiveDate,
     inflow: Decimal,
     outflow: Decimal,
@@ -432,12 +449,26 @@ fn performance_core(
         && start_opt.is_some()
         && flows.iter().any(|f| f.source.is_unavailable_for_returns());
 
+    let is_dietz = profile.is_dietz();
+    let dietz = if is_dietz && !coverage_unavailable {
+        modified_dietz(history, &flows, actual_start, actual_end)
+    } else {
+        None
+    };
+
     let twr = if holdings {
         TwrComputation {
             cumulative: None,
             samples: Vec::new(),
             warnings: Vec::new(),
             reasons: vec![QualityNote::HoldingsTwrNotApplicable],
+        }
+    } else if is_dietz && profile == MeasureProfile::DietzSummary {
+        TwrComputation {
+            cumulative: None,
+            samples: Vec::new(),
+            warnings: Vec::new(),
+            reasons: Vec::new(),
         }
     } else {
         time_weighted_returns(history, &flows)
@@ -455,6 +486,12 @@ fn performance_core(
             reasons: vec![QualityNote::CoverageUnavailable {
                 metric: Metric::Irr,
             }],
+        }
+    } else if is_dietz {
+        IrrComputation {
+            annualized: None,
+            warnings: Vec::new(),
+            reasons: Vec::new(),
         }
     } else if full {
         xirr(history, &flows)
@@ -522,6 +559,10 @@ fn performance_core(
         }
         if has_base && !holdings_out_of_range {
             holdings_chained = Some(factor - Decimal::ONE);
+        }
+    } else if !holdings && is_dietz {
+        if include_series {
+            series = modified_dietz_series(history, &flows, actual_start);
         }
     } else if !holdings {
         // Each sample covers one window step: the previous sample's date (or
@@ -675,11 +716,21 @@ fn performance_core(
         currency.clone(),
         Some(actual_start),
         Some(actual_end),
-        method,
+        if is_dietz && !holdings {
+            ReturnMethod::ModifiedDietz
+        } else {
+            method
+        },
         Returns {
             twr: twr.cumulative.map(|v| v.round_dp(STORED_PRECISION)),
             annualized_twr: if full {
                 annualize(actual_start, actual_end, twr.cumulative)
+            } else {
+                None
+            },
+            modified_dietz: dietz.map(|v| v.round_dp(STORED_PRECISION)),
+            annualized_modified_dietz: if full || profile == MeasureProfile::Dietz {
+                annualize(actual_start, actual_end, dietz)
             } else {
                 None
             },
@@ -848,6 +899,84 @@ fn time_weighted_returns(history: &[DailyValuation], flows: &[PeriodFlow]) -> Tw
         warnings,
         reasons,
     }
+}
+
+/// Modified Dietz rate of return over a window:
+/// R = (V_end - V_start - C) / (V_start + sum(W_i * F_i))
+/// where W_i = (actual_end - D_i) / (actual_end - actual_start).
+pub fn modified_dietz(
+    history: &[DailyValuation],
+    flows: &[PeriodFlow],
+    actual_start: NaiveDate,
+    actual_end: NaiveDate,
+) -> Option<Decimal> {
+    if history.len() < 2 {
+        return None;
+    }
+    let start_point = history.first()?;
+    let end_point = history.last()?;
+    let start_val = start_point.total_value_base;
+    let end_val = end_point.total_value_base;
+    let total_days = (actual_end - actual_start).num_days();
+    if total_days <= 0 {
+        if start_val > Decimal::ZERO {
+            let total_net: Decimal = flows.iter().map(|f| f.inflow - f.outflow).sum();
+            return arith::div(end_val - start_val - total_net, start_val);
+        }
+        return None;
+    }
+    let total_days_dec = Decimal::from(total_days);
+
+    let mut weighted_flows = Decimal::ZERO;
+    let mut total_flows = Decimal::ZERO;
+
+    for flow in flows {
+        let net = flow.inflow - flow.outflow;
+        total_flows += net;
+        let days_remaining = (actual_end - flow.date).num_days().clamp(0, total_days);
+        let weight = arith::div(Decimal::from(days_remaining), total_days_dec).unwrap_or(Decimal::ZERO);
+        weighted_flows += arith::mul(weight, net).unwrap_or(Decimal::ZERO);
+    }
+
+    let denominator = start_val + weighted_flows;
+    let gain = end_val - start_val - total_flows;
+
+    if denominator <= Decimal::ZERO {
+        if denominator == Decimal::ZERO && gain == Decimal::ZERO {
+            return Some(Decimal::ZERO);
+        }
+        return None;
+    }
+
+    arith::div(gain, denominator)
+}
+
+fn modified_dietz_series(
+    history: &[DailyValuation],
+    flows: &[PeriodFlow],
+    actual_start: NaiveDate,
+) -> Vec<SeriesPoint> {
+    let mut series = Vec::with_capacity(history.len());
+    series.push(SeriesPoint {
+        date: actual_start,
+        value: Decimal::ZERO,
+    });
+
+    let mut cumulative_flows = Vec::new();
+    for (idx, pt) in history.iter().enumerate().skip(1) {
+        if idx - 1 < flows.len() {
+            cumulative_flows.push(flows[idx - 1]);
+        }
+        let step_history = &history[0..=idx];
+        let ret = modified_dietz(step_history, &cumulative_flows, actual_start, pt.date)
+            .unwrap_or(Decimal::ZERO)
+            .round_dp(STORED_PRECISION);
+        series.push(SeriesPoint {
+            date: pt.date,
+            value: ret,
+        });
+    }
+    series
 }
 
 fn xirr(history: &[DailyValuation], flows: &[PeriodFlow]) -> IrrComputation {
@@ -1439,6 +1568,7 @@ fn refresh_summary(result: &mut PerformanceResult) {
     let percent = if percent_available {
         match result.method {
             ReturnMethod::TimeWeighted => result.returns.twr,
+            ReturnMethod::ModifiedDietz => result.returns.modified_dietz,
             ReturnMethod::ValueReturn | ReturnMethod::SymbolPriceBased => {
                 result.returns.value_return
             }
@@ -1466,7 +1596,7 @@ fn refresh_summary(result: &mut PerformanceResult) {
         SummaryBasis::BookBasis
     } else if matches!(
         result.method,
-        ReturnMethod::TimeWeighted | ReturnMethod::SymbolPriceBased
+        ReturnMethod::TimeWeighted | ReturnMethod::ModifiedDietz | ReturnMethod::SymbolPriceBased
     ) {
         SummaryBasis::MarketValue
     } else {

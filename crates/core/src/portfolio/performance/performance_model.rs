@@ -26,6 +26,7 @@ pub struct TotalReturn {
 pub enum ReturnMethod {
     #[default]
     TimeWeighted,
+    ModifiedDietz,
     ValueReturn,
     SymbolPriceBased,
     NotApplicable,
@@ -56,6 +57,8 @@ pub struct PerformancePeriod {
 pub struct PerformanceReturns {
     pub twr: Option<Decimal>,
     pub annualized_twr: Option<Decimal>,
+    pub modified_dietz: Option<Decimal>,
+    pub annualized_modified_dietz: Option<Decimal>,
     /// Selected-period money-weighted return derived from annualized XIRR.
     pub irr: Option<Decimal>,
     /// Annualized XIRR using dated cash flows.
@@ -72,6 +75,8 @@ pub enum PerformanceSummaryProfile {
     #[serde(alias = "headline")]
     Summary,
     Dashboard,
+    Dietz,
+    DietzSummary,
 }
 
 pub fn performance_tracking_composition(
@@ -196,6 +201,8 @@ pub fn unavailable_performance_metrics(
             annualized_twr: None,
             irr: None,
             annualized_irr: None,
+            modified_dietz: None,
+            annualized_modified_dietz: None,
             value_return: None,
             annualized_value_return: None,
         },
@@ -447,6 +454,8 @@ mod tests {
                 annualized_twr: None,
                 irr: None,
                 annualized_irr: None,
+                modified_dietz: None,
+                annualized_modified_dietz: None,
                 value_return: Some(Decimal::new(12, 2)),
                 annualized_value_return: None,
             },

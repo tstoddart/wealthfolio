@@ -52,6 +52,11 @@ async fn update_settings(
         .timezone
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = updated_settings.timezone.clone();
+    *state
+        .return_metric
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        updated_settings.default_return_metric.clone();
     state.health_service.clear_cache().await;
 
     let base_currency_changed = updated_settings.base_currency != previous_base_currency;

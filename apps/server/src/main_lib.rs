@@ -101,6 +101,7 @@ pub struct AppState {
     pub quote_service: Arc<dyn QuoteServiceTrait + Send + Sync>,
     pub base_currency: Arc<RwLock<String>>,
     pub timezone: Arc<RwLock<String>>,
+    pub return_metric: Arc<RwLock<String>>,
     pub snapshot_service: Arc<dyn SnapshotServiceTrait + Send + Sync>,
     /// Direct repository handle. No handler reads it currently — snapshot
     /// access goes through `snapshot_service`. Retained for tests and any
@@ -190,6 +191,11 @@ impl AppState {
 
     pub(crate) fn timezone(&self) -> crate::error::ApiResult<String> {
         read_runtime_setting(&self.timezone, "Timezone")
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn return_metric(&self) -> crate::error::ApiResult<String> {
+        read_runtime_setting(&self.return_metric, "Return metric")
     }
 }
 
@@ -513,6 +519,7 @@ async fn initialize_profile_state(
     let settings = settings_service.get_settings()?;
     let base_currency = Arc::new(RwLock::new(settings.base_currency));
     let timezone = Arc::new(RwLock::new(settings.timezone.clone()));
+    let return_metric = Arc::new(RwLock::new(settings.default_return_metric.clone()));
     let rating_instance_id = settings_service
         .get_setting_value("instance_id")?
         .ok_or_else(|| anyhow::anyhow!("Missing internal instance ID"))?;
@@ -754,9 +761,10 @@ async fn initialize_profile_state(
     );
 
     let performance_service = Arc::new(
-        wealthfolio_core::portfolio::performance::PerformanceService::new(
+        wealthfolio_core::portfolio::performance::PerformanceService::new_with_return_metric(
             base_currency.clone(),
             timezone.clone(),
+            return_metric.clone(),
             fact_sources.clone(),
             valuation_repository.clone(),
             lots_repository.clone(),
@@ -1144,6 +1152,7 @@ async fn initialize_profile_state(
         quote_service,
         base_currency,
         timezone,
+        return_metric,
         snapshot_service,
         snapshot_repository,
         lots_repository,

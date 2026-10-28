@@ -38,6 +38,7 @@ pub struct ServiceContext {
     pub secret_store: Arc<dyn wealthfolio_core::secrets::SecretStore>,
     pub base_currency: Arc<RwLock<String>>,
     pub timezone: Arc<RwLock<String>>,
+    pub return_metric: Arc<RwLock<String>>,
     pub rating_instance_id: Arc<String>,
 
     /// Domain event sink for emitting events after mutations.
@@ -125,6 +126,20 @@ impl ServiceContext {
             .timezone
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_timezone;
+    }
+
+    pub fn get_return_metric(&self) -> String {
+        self.return_metric
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn update_return_metric(&self, new_metric: String) {
+        *self
+            .return_metric
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_metric;
     }
 
     pub fn settings_service(&self) -> Arc<dyn settings::SettingsServiceTrait> {
