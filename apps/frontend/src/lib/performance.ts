@@ -60,3 +60,96 @@ export function shouldDisplayAnnualizedPerformanceReturn(
 
   return (end - start) / MS_PER_DAY >= ANNUALIZED_DISPLAY_MIN_DAYS;
 }
+
+export interface PerformanceMethodInfo {
+  code: "dietz" | "twr" | "irr" | "value" | "price";
+  label: string;
+  badgeLabel: string;
+  description: string;
+}
+
+export function getPerformanceMethodInfo(
+  result?: PerformanceResult | null,
+  configuredMetric?: string | null,
+): PerformanceMethodInfo {
+  const method = result?.mode || result?.summary?.method;
+
+  if (method === "modifiedDietz") {
+    return {
+      code: "dietz",
+      label: "Modified Dietz",
+      badgeLabel: "Dietz",
+      description: "Cash-flow weighted return approximation with stepped daily series (fast calculation).",
+    };
+  }
+
+  if (method === "valueReturn") {
+    return {
+      code: "value",
+      label: "Value Return",
+      badgeLabel: "Value",
+      description: "Net absolute gain over starting capital (used for holdings/snapshot accounts).",
+    };
+  }
+
+  if (method === "symbolPriceBased") {
+    return {
+      code: "price",
+      label: "Price Return",
+      badgeLabel: "Price",
+      description: "Asset price return excluding transaction timing.",
+    };
+  }
+
+  if (method === "timeWeighted") {
+    if (configuredMetric === "irr") {
+      return {
+        code: "irr",
+        label: "Internal Rate of Return",
+        badgeLabel: "IRR",
+        description: "Money-weighted return (XIRR) sensitive to cash flow timing and scale.",
+      };
+    }
+    return {
+      code: "twr",
+      label: "Time-Weighted Return",
+      badgeLabel: "TWR",
+      description: "Daily true TWR compounding, isolating market performance from cash flow timing.",
+    };
+  }
+
+  // Fallback to configured metric if result method is not available or notApplicable
+  if (configuredMetric === "modifiedDietz") {
+    return {
+      code: "dietz",
+      label: "Modified Dietz",
+      badgeLabel: "Dietz",
+      description: "Cash-flow weighted return approximation with stepped daily series.",
+    };
+  }
+
+  if (configuredMetric === "irr") {
+    return {
+      code: "irr",
+      label: "Internal Rate of Return",
+      badgeLabel: "IRR",
+      description: "Money-weighted return (XIRR) sensitive to cash flow timing and scale.",
+    };
+  }
+
+  if (configuredMetric === "valueReturn") {
+    return {
+      code: "value",
+      label: "Value Return",
+      badgeLabel: "Value",
+      description: "Net absolute gain over starting capital.",
+    };
+  }
+
+  return {
+    code: "twr",
+    label: "Time-Weighted Return",
+    badgeLabel: "TWR",
+    description: "Daily true TWR compounding, isolating market performance from cash flow timing.",
+  };
+}

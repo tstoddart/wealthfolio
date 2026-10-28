@@ -1305,7 +1305,7 @@ export interface PerformancePeriod {
   endDate?: string | null;
 }
 
-export type ReturnMethod = "timeWeighted" | "valueReturn" | "symbolPriceBased" | "notApplicable";
+export type ReturnMethod = "timeWeighted" | "modifiedDietz" | "valueReturn" | "symbolPriceBased" | "notApplicable";
 
 export type BasisStatus = "complete" | "partialUnknown" | "unknown" | "notApplicable";
 
@@ -1328,6 +1328,8 @@ export interface PerformanceSummary {
 export interface PerformanceReturns {
   twr?: number | null;
   annualizedTwr?: number | null;
+  modifiedDietz?: number | null;
+  annualizedModifiedDietz?: number | null;
   /** Selected-period money-weighted return derived from annualized XIRR. */
   irr?: number | null;
   /** Annualized XIRR using dated cash flows. */

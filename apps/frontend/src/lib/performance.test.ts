@@ -2,6 +2,7 @@ import type { PerformanceResult } from "@/lib/types";
 import { describe, expect, it } from "vitest";
 
 import {
+  getPerformanceMethodInfo,
   performancePeriodPnl,
   performanceSummaryReturn,
   shouldDisplayAnnualizedPerformanceReturn,
@@ -166,5 +167,46 @@ describe("shouldDisplayAnnualizedPerformanceReturn", () => {
     result.period = { startDate: "2026-01-01", endDate: "2026-06-30" };
 
     expect(shouldDisplayAnnualizedPerformanceReturn(result)).toBe(false);
+  });
+});
+
+describe("getPerformanceMethodInfo", () => {
+  it("identifies Modified Dietz return method", () => {
+    const result = baseResult();
+    result.mode = "modifiedDietz";
+    const info = getPerformanceMethodInfo(result);
+    expect(info.code).toBe("dietz");
+    expect(info.badgeLabel).toBe("Dietz");
+    expect(info.label).toBe("Modified Dietz");
+  });
+
+  it("identifies Value Return method", () => {
+    const result = baseResult();
+    result.mode = "valueReturn";
+    const info = getPerformanceMethodInfo(result);
+    expect(info.code).toBe("value");
+    expect(info.badgeLabel).toBe("Value");
+  });
+
+  it("identifies TWR method", () => {
+    const result = baseResult();
+    result.mode = "timeWeighted";
+    const info = getPerformanceMethodInfo(result, "twr");
+    expect(info.code).toBe("twr");
+    expect(info.badgeLabel).toBe("TWR");
+  });
+
+  it("identifies IRR method when configured metric is irr", () => {
+    const result = baseResult();
+    result.mode = "timeWeighted";
+    const info = getPerformanceMethodInfo(result, "irr");
+    expect(info.code).toBe("irr");
+    expect(info.badgeLabel).toBe("IRR");
+  });
+
+  it("falls back to configured metric when result is missing", () => {
+    expect(getPerformanceMethodInfo(null, "modifiedDietz").code).toBe("dietz");
+    expect(getPerformanceMethodInfo(null, "irr").code).toBe("irr");
+    expect(getPerformanceMethodInfo(null, "twr").code).toBe("twr");
   });
 });

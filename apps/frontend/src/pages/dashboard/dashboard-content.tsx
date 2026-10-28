@@ -18,6 +18,8 @@ import { Skeleton } from "@wealthfolio/ui/components/ui/skeleton";
 import { format } from "date-fns";
 import { useMemo } from "react";
 import { PrivacyToggle } from "@/components/privacy-toggle";
+import { PerformanceMethodBadge } from "@/components/performance-method-badge";
+import { cn } from "@/lib/utils";
 import type { AccountScope } from "@/lib/types";
 import { accountScopeKey } from "@/pages/allocation-targets/components/target-scope";
 import { AccountsSummary } from "./accounts-summary";
@@ -121,7 +123,11 @@ export function DashboardContent({
   const datesReady = isAllTime || (!!startDate && !!endDate);
 
   const scopeKey = accountScopeKey(scope);
-  const { data: portfolioPerformance, isLoading: isPortfolioPerformanceLoading } = useQuery({
+  const {
+    data: portfolioPerformance,
+    isLoading: isPortfolioPerformanceLoading,
+    isFetching: isPortfolioPerformanceFetching,
+  } = useQuery({
     queryKey: [QueryKeys.PERFORMANCE_SUMMARY, "dashboard", scopeKey, startDate, endDate],
     queryFn: () =>
       calculatePerformanceSummary({
@@ -206,7 +212,12 @@ export function DashboardContent({
                 <Skeleton className="h-4 w-16" />
               </div>
             ) : (
-              <>
+              <div
+                className={cn(
+                  "flex items-center gap-x-3 transition-opacity duration-200",
+                  isPortfolioPerformanceFetching && "opacity-60",
+                )}
+              >
                 {gainLossAmount == null ? (
                   <span className="text-muted-foreground lg:text-md text-sm font-light">N/A</span>
                 ) : (
@@ -227,11 +238,17 @@ export function DashboardContent({
                     animated={true}
                   />
                 )}
-              </>
+              </div>
             )}
-            <span className="lg:text-md text-muted-foreground ms-1 text-sm font-light">
-              {period.label}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="lg:text-md text-muted-foreground ms-1 text-sm font-light">
+                {period.label}
+              </span>
+              <PerformanceMethodBadge
+                result={portfolioPerformance}
+                isFetching={isPortfolioPerformanceFetching && !isPortfolioPerformanceLoading}
+              />
+            </div>
           </div>
         </div>
       </div>

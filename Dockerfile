@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 # Global build args
-ARG RUST_IMAGE=rust:1.98.1-alpine
+ARG RUST_IMAGE=docker.io/library/rust:1.98.1-alpine
 
 # Stage 1: build frontend
 # Use --platform=$BUILDPLATFORM to run on the native runner (fast)
 # Keep the Node major in sync with .node-version
-FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
+FROM --platform=$BUILDPLATFORM docker.io/library/node:24-alpine AS frontend
 
 # Wealthfolio Connect configuration (baked into JS bundle at build time)
 # Pass via --build-arg to enable; omit to build without Connect.
@@ -26,7 +26,7 @@ RUN pnpm --filter frontend... build && mv dist /web-dist
 # Stage 2: build server with cross-compilation
 # Pinned: a new xx image invalidates the chef and deps layers that PR builds
 # import from the GHCR cache, which only rewarms on main
-FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.10.0 AS xx
+FROM --platform=$BUILDPLATFORM docker.io/tonistiigi/xx:1.10.0 AS xx
 
 FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS chef
 # Copy xx scripts to handle cross-compilation
@@ -97,7 +97,7 @@ RUN --mount=type=secret,id=connect-storage-hosts \
     cp target/$(xx-cargo --print-target-triple)/release/wealthfolio-server /wealthfolio-server
 
 # Final stage
-FROM alpine:3.19 AS runtime
+FROM docker.io/library/alpine:3.19 AS runtime
 WORKDIR /app
 # Copy from backend (which is now build platform, but binary is target platform)
 COPY --from=backend /wealthfolio-server /usr/local/bin/wealthfolio-server

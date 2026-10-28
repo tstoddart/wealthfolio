@@ -16,6 +16,7 @@ import type {
 } from "@/lib/types";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { GainAmount, GainPercent, PrivacyAmount } from "@wealthfolio/ui";
+import { PerformanceMethodBadge } from "@/components/performance-method-badge";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { Separator } from "@wealthfolio/ui/components/ui/separator";
@@ -146,6 +147,7 @@ const AccountSummaryComponent = React.memo(
     onToggle,
     isLoadingValuation = false,
     isLoadingPerformance = false,
+    isFetchingPerformance = false,
     displayInAccountCurrency = false,
     isNested = false,
   }: {
@@ -154,6 +156,7 @@ const AccountSummaryComponent = React.memo(
     onToggle?: () => void;
     isLoadingValuation?: boolean;
     isLoadingPerformance?: boolean;
+    isFetchingPerformance?: boolean;
     displayInAccountCurrency?: boolean;
     isNested?: boolean;
   }) => {
@@ -262,7 +265,12 @@ const AccountSummaryComponent = React.memo(
       shouldExposeSecondaryMetric = true;
     } else if (shouldRenderGainMetrics) {
       secondaryMetricContent = (
-        <>
+        <div
+          className={cn(
+            "flex items-center gap-1.5 transition-opacity duration-200",
+            isFetchingPerformance && "opacity-60",
+          )}
+        >
           {gainAmountToDisplay != null && (
             <>
               <GainAmount
@@ -275,7 +283,7 @@ const AccountSummaryComponent = React.memo(
             </>
           )}
           <GainPercent className="text-xs md:text-sm" value={gainPercentToDisplay} />
-        </>
+        </div>
       );
       shouldExposeSecondaryMetric = true;
     } else {
@@ -453,6 +461,7 @@ export const AccountsSummary = React.memo(
     const {
       data: performanceSummaries,
       isLoading: isLoadingPerformanceQueries,
+      isFetching: isFetchingPerformanceQueries,
       isError: isPerformanceError,
       error: performanceError,
     } = useQuery({
@@ -470,6 +479,9 @@ export const AccountsSummary = React.memo(
       staleTime: 30 * 1000,
       retry: 1,
     });
+
+    const isRecalculatingPerformance =
+      isFetchingPerformanceQueries && !isLoadingPerformanceQueries;
 
     const combinedAccountViews = useMemo((): AccountSummaryDisplayData[] => {
       if (!accounts || accounts.length === 0) return [];
@@ -599,6 +611,8 @@ export const AccountsSummary = React.memo(
       }
 
       const isLoadingPerformance = isLoadingCurrentValuations || isLoadingPerformanceQueries;
+      const isRecalculatingPerformance =
+        isFetchingPerformanceQueries && !isLoadingPerformanceQueries;
 
       if (accountsGrouped) {
         const groups: Record<string, AccountSummaryDisplayData[]> = {};
@@ -688,6 +702,7 @@ export const AccountsSummary = React.memo(
                       onToggle={() => toggleGroup(group.accountName)}
                       isLoadingValuation={isLoadingCurrentValuations}
                       isLoadingPerformance={isLoadingPerformanceQueries}
+                      isFetchingPerformance={isRecalculatingPerformance}
                     />
                   </div>
                   {isExpanded && (
@@ -699,6 +714,7 @@ export const AccountsSummary = React.memo(
                               item={account}
                               isLoadingValuation={isLoadingCurrentValuations}
                               isLoadingPerformance={isLoadingPerformance}
+                              isFetchingPerformance={isRecalculatingPerformance}
                               displayInAccountCurrency={
                                 account.accountCurrency !== account.baseCurrency
                               }
@@ -718,6 +734,7 @@ export const AccountsSummary = React.memo(
                 item={account}
                 isLoadingValuation={isLoadingCurrentValuations}
                 isLoadingPerformance={isLoadingPerformance}
+                isFetchingPerformance={isRecalculatingPerformance}
                 displayInAccountCurrency={account.accountCurrency !== account.baseCurrency}
               />
             ))}
@@ -734,6 +751,7 @@ export const AccountsSummary = React.memo(
             item={account}
             isLoadingValuation={isLoadingCurrentValuations}
             isLoadingPerformance={isLoadingPerformance}
+            isFetchingPerformance={isRecalculatingPerformance}
             displayInAccountCurrency={account.accountCurrency !== account.baseCurrency}
           />
         ));
@@ -747,6 +765,7 @@ export const AccountsSummary = React.memo(
       isLoadingAccounts,
       isLoadingCurrentValuations,
       isLoadingPerformanceQueries,
+      isFetchingPerformanceQueries,
       performanceSummaries,
       isErrorAccounts,
       errorAccounts,
@@ -757,7 +776,10 @@ export const AccountsSummary = React.memo(
     return (
       <div className="mb-4 w-full space-y-0">
         <div className="flex flex-row items-center justify-between gap-2 pb-2">
-          <h2 className="text-sm font-semibold tracking-tight">{t("dashboard:accounts")}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold tracking-tight">{t("dashboard:accounts")}</h2>
+            <PerformanceMethodBadge isFetching={isRecalculatingPerformance} showStatusText />
+          </div>
           <Button
             variant="ghost"
             className="text-muted-foreground hover:bg-success-subtle"

@@ -1,5 +1,7 @@
 import { useTranslation } from "react-i18next";
+import { useIsFetching } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@wealthfolio/ui/components/ui/card";
+import { Spinner } from "@wealthfolio/ui/components/ui/spinner";
 import {
   Select,
   SelectContent,
@@ -8,11 +10,13 @@ import {
   SelectValue,
 } from "@wealthfolio/ui/components/ui/select";
 import { useSettingsContext } from "@/lib/settings-provider";
+import { QueryKeys } from "@/lib/query-keys";
 import { Settings } from "@/lib/types";
 
 export function ReturnMetricSettings() {
   const { t } = useTranslation();
   const { settings, updateSettings } = useSettingsContext();
+  const isRecalculating = useIsFetching({ queryKey: [QueryKeys.PERFORMANCE_SUMMARY] }) > 0;
 
   const currentMetric = settings?.defaultReturnMetric || "twr";
 
@@ -104,6 +108,20 @@ export function ReturnMetricSettings() {
               </SelectItem>
             </SelectContent>
           </Select>
+          {isRecalculating && (
+            <div
+              data-testid="settings-recalculating-indicator"
+              className="flex items-center gap-2 text-xs text-muted-foreground pt-2 animate-pulse"
+            >
+              <Spinner className="h-3.5 w-3.5 animate-spin text-primary" />
+              <span>
+                {t(
+                  "settings:recalculating_performance",
+                  "Recalculating portfolio performance in background...",
+                )}
+              </span>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
