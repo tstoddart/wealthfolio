@@ -208,5 +208,7 @@ describe("getPerformanceMethodInfo", () => {
     expect(getPerformanceMethodInfo(null, "modifiedDietz").code).toBe("dietz");
     expect(getPerformanceMethodInfo(null, "irr").code).toBe("irr");
     expect(getPerformanceMethodInfo(null, "twr").code).toBe("twr");
+    expect(getPerformanceMethodInfo(null, "modifiedDietz", "HOLDINGS").code).toBe("value");
+    expect(getPerformanceMethodInfo(null, "modifiedDietz", "TRANSACTIONS").code).toBe("dietz");
   });
 });

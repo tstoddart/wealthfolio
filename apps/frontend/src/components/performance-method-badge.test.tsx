@@ -74,4 +74,9 @@ describe("PerformanceMethodBadge", () => {
     await userEvent.click(button);
     expect(mockNavigate).toHaveBeenCalledWith("/settings");
   });
+
+  it("renders Value badge for holdings tracking mode fallback", () => {
+    render(<PerformanceMethodBadge result={null} fallbackTrackingMode="HOLDINGS" />);
+    expect(screen.getByText("Value")).toBeInTheDocument();
+  });
 });

@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 
 interface PerformanceMethodBadgeProps {
   result?: PerformanceResult | null;
+  fallbackTrackingMode?: string | null;
   isFetching?: boolean;
   className?: string;
   showStatusText?: boolean;
@@ -20,6 +21,7 @@ interface PerformanceMethodBadgeProps {
 
 export function PerformanceMethodBadge({
   result,
+  fallbackTrackingMode,
   isFetching = false,
   className,
   showStatusText = false,
@@ -28,7 +30,7 @@ export function PerformanceMethodBadge({
   const navigate = inRouter ? useNavigate() : null;
   const { settings } = useSettingsContext();
   const configuredMetric = settings?.defaultReturnMetric;
-  const methodInfo = getPerformanceMethodInfo(result, configuredMetric);
+  const methodInfo = getPerformanceMethodInfo(result, configuredMetric, fallbackTrackingMode);
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -62,22 +64,27 @@ export function PerformanceMethodBadge({
           <Badge
             variant="outline"
             className={cn(
-              "cursor-pointer select-none text-[10px] font-medium tracking-wide uppercase px-1.5 py-0 h-4 border-muted-foreground/30 hover:border-primary/50 text-muted-foreground hover:text-foreground transition-colors",
+              "cursor-pointer select-none text-[9px] font-semibold tracking-wider uppercase px-1 py-0 h-3.5 leading-none border-muted-foreground/30 hover:border-primary/50 text-muted-foreground hover:text-foreground transition-colors shrink-0",
               isFetching && "border-primary/40 text-primary",
             )}
           >
             {methodInfo.badgeLabel}
           </Badge>
         </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-xs space-y-1 text-xs">
-          <p className="font-semibold">{methodInfo.label}</p>
-          <p className="text-muted-foreground">{methodInfo.description}</p>
+        <TooltipContent side="top" className="max-w-xs space-y-1.5 text-xs p-2.5 shadow-md">
+          <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1">
+            <p className="font-semibold text-foreground">{methodInfo.label}</p>
+            <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-muted text-muted-foreground">
+              {methodInfo.badgeLabel}
+            </span>
+          </div>
+          <p className="text-muted-foreground leading-relaxed">{methodInfo.description}</p>
           {isFetching && (
-            <p className="text-primary font-medium pt-0.5">
+            <p className="text-primary font-medium pt-0.5 animate-pulse">
               Recalculating with {targetLabel}...
             </p>
           )}
-          <p className="text-[10px] text-muted-foreground/80 italic pt-1 border-t border-border/50">
+          <p className="text-[10px] text-muted-foreground/80 italic pt-0.5">
             Click to configure in Settings
           </p>
         </TooltipContent>

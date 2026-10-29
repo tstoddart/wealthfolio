@@ -232,23 +232,23 @@ export function DashboardContent({
                 {simpleReturn == null ? (
                   <span className="text-muted-foreground lg:text-md text-sm font-light">N/A</span>
                 ) : (
-                  <GainPercent
-                    className="lg:text-md text-sm font-light"
-                    value={simpleReturn}
-                    animated={true}
-                  />
+                  <div className="flex items-center gap-1.5">
+                    <GainPercent
+                      className="lg:text-md text-sm font-light"
+                      value={simpleReturn}
+                      animated={true}
+                    />
+                    <PerformanceMethodBadge
+                      result={portfolioPerformance}
+                      isFetching={isPortfolioPerformanceFetching && !isPortfolioPerformanceLoading}
+                    />
+                  </div>
                 )}
               </div>
             )}
-            <div className="flex items-center gap-1.5">
-              <span className="lg:text-md text-muted-foreground ms-1 text-sm font-light">
-                {period.label}
-              </span>
-              <PerformanceMethodBadge
-                result={portfolioPerformance}
-                isFetching={isPortfolioPerformanceFetching && !isPortfolioPerformanceLoading}
-              />
-            </div>
+            <span className="lg:text-md text-muted-foreground ms-1 text-sm font-light">
+              {period.label}
+            </span>
           </div>
         </div>
       </div>

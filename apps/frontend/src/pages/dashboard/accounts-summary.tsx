@@ -11,12 +11,14 @@ import type {
   Account,
   CurrentAccountValuation,
   DateRange,
+  PerformanceResult,
   PerformanceSummaryScope,
   TrackingMode,
 } from "@/lib/types";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { GainAmount, GainPercent, PrivacyAmount } from "@wealthfolio/ui";
 import { PerformanceMethodBadge } from "@/components/performance-method-badge";
+import { Spinner } from "@wealthfolio/ui/components/ui/spinner";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { Separator } from "@wealthfolio/ui/components/ui/separator";
@@ -49,6 +51,7 @@ interface AccountSummaryDisplayData {
   accountCount?: number;
   accounts?: AccountSummaryDisplayData[];
   displayInAccountCurrency?: boolean;
+  performance?: PerformanceResult | null;
 }
 
 function addPerformanceScope(
@@ -283,6 +286,12 @@ const AccountSummaryComponent = React.memo(
             </>
           )}
           <GainPercent className="text-xs md:text-sm" value={gainPercentToDisplay} />
+          {gainPercentToDisplay != null && (
+            <PerformanceMethodBadge
+              result={item.performance}
+              fallbackTrackingMode={item.trackingMode}
+            />
+          )}
         </div>
       );
       shouldExposeSecondaryMetric = true;
@@ -509,6 +518,7 @@ export const AccountsSummary = React.memo(
             trackingMode: acc.trackingMode,
             isGroup: false,
             isActive: acc.isActive,
+            performance: null,
           };
         }
 
@@ -541,6 +551,7 @@ export const AccountsSummary = React.memo(
           trackingMode: acc.trackingMode,
           isGroup: false,
           isActive: acc.isActive,
+          performance: perf ?? null,
         };
       });
     }, [accounts, currentAccountValuations, performanceSummaries, settings?.baseCurrency]);
@@ -669,6 +680,7 @@ export const AccountsSummary = React.memo(
               ? "HOLDINGS"
               : undefined,
             displayInAccountCurrency: false,
+            performance: groupPerformance ?? null,
           });
         });
 
@@ -778,7 +790,15 @@ export const AccountsSummary = React.memo(
         <div className="flex flex-row items-center justify-between gap-2 pb-2">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold tracking-tight">{t("dashboard:accounts")}</h2>
-            <PerformanceMethodBadge isFetching={isRecalculatingPerformance} showStatusText />
+            {isRecalculatingPerformance && (
+              <div
+                data-testid="accounts-recalculating-indicator"
+                className="flex items-center gap-1.5 text-xs text-muted-foreground animate-pulse"
+              >
+                <Spinner className="h-3 w-3 animate-spin text-primary" />
+                <span>Recalculating...</span>
+              </div>
+            )}
           </div>
           <Button
             variant="ghost"

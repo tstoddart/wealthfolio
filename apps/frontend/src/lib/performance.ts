@@ -71,6 +71,7 @@ export interface PerformanceMethodInfo {
 export function getPerformanceMethodInfo(
   result?: PerformanceResult | null,
   configuredMetric?: string | null,
+  fallbackTrackingMode?: string | null,
 ): PerformanceMethodInfo {
   const method = result?.mode || result?.summary?.method;
 
@@ -79,7 +80,8 @@ export function getPerformanceMethodInfo(
       code: "dietz",
       label: "Modified Dietz",
       badgeLabel: "Dietz",
-      description: "Cash-flow weighted return approximation with stepped daily series (fast calculation).",
+      description:
+        "Fast cash-flow weighted return approximation with stepped daily series. Accounts for deposits and withdrawals without iterative root-finding.",
     };
   }
 
@@ -88,7 +90,8 @@ export function getPerformanceMethodInfo(
       code: "value",
       label: "Value Return",
       badgeLabel: "Value",
-      description: "Net absolute gain over starting capital (used for holdings/snapshot accounts).",
+      description:
+        "Net gain over net contributions. Used for holdings/snapshot accounts without transaction cash-flow timing, and mixed portfolios containing them.",
     };
   }
 
@@ -97,7 +100,7 @@ export function getPerformanceMethodInfo(
       code: "price",
       label: "Price Return",
       badgeLabel: "Price",
-      description: "Asset price return excluding transaction timing.",
+      description: "Asset price return excluding transaction cash-flow timing.",
     };
   }
 
@@ -105,16 +108,28 @@ export function getPerformanceMethodInfo(
     if (configuredMetric === "irr") {
       return {
         code: "irr",
-        label: "Internal Rate of Return",
+        label: "Internal Rate of Return (IRR)",
         badgeLabel: "IRR",
-        description: "Money-weighted return (XIRR) sensitive to cash flow timing and scale.",
+        description:
+          "Money-weighted return (XIRR) sensitive to the exact timing, scale, and duration of cash flows.",
       };
     }
     return {
       code: "twr",
-      label: "Time-Weighted Return",
+      label: "Time-Weighted Return (TWR)",
       badgeLabel: "TWR",
-      description: "Daily true TWR compounding, isolating market performance from cash flow timing.",
+      description:
+        "True daily compounding return isolating market performance from cash deposit and withdrawal timing.",
+    };
+  }
+
+  if (fallbackTrackingMode?.toUpperCase() === "HOLDINGS") {
+    return {
+      code: "value",
+      label: "Value Return",
+      badgeLabel: "Value",
+      description:
+        "Net gain over net contributions. Used for holdings/snapshot accounts without continuous cash-flow history.",
     };
   }
 
@@ -124,16 +139,18 @@ export function getPerformanceMethodInfo(
       code: "dietz",
       label: "Modified Dietz",
       badgeLabel: "Dietz",
-      description: "Cash-flow weighted return approximation with stepped daily series.",
+      description:
+        "Fast cash-flow weighted return approximation with stepped daily series. Accounts for deposits and withdrawals without iterative root-finding.",
     };
   }
 
   if (configuredMetric === "irr") {
     return {
       code: "irr",
-      label: "Internal Rate of Return",
+      label: "Internal Rate of Return (IRR)",
       badgeLabel: "IRR",
-      description: "Money-weighted return (XIRR) sensitive to cash flow timing and scale.",
+      description:
+        "Money-weighted return (XIRR) sensitive to the exact timing, scale, and duration of cash flows.",
     };
   }
 
@@ -148,8 +165,9 @@ export function getPerformanceMethodInfo(
 
   return {
     code: "twr",
-    label: "Time-Weighted Return",
+    label: "Time-Weighted Return (TWR)",
     badgeLabel: "TWR",
-    description: "Daily true TWR compounding, isolating market performance from cash flow timing.",
+    description:
+      "True daily compounding return isolating market performance from cash deposit and withdrawal timing.",
   };
 }
