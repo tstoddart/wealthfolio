@@ -4,7 +4,8 @@ import {
   useHealthStatus,
   useRunHealthChecks,
 } from "@/hooks/use-health";
-import type { HealthCategory, HealthIssue, HealthSeverity } from "@/lib/types";
+import { HOVER_SLOT } from "@/lib/hover-slot";
+import type { FixAction, HealthCategory, HealthIssue, HealthSeverity } from "@/lib/types";
 import {
   Badge,
   Button,
@@ -24,6 +25,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IssueDetailSheet } from "./components/issue-detail-sheet";
 import { translateIssueText } from "./translate-issue";
+import { cardSurfaceClassName } from "@wealthfolio/ui/components/ui/card";
 
 const SEVERITY_LABEL_KEYS: Record<HealthSeverity, string> = {
   INFO: "severity.info",
@@ -73,7 +75,7 @@ const SEVERITY_CONFIG: Record<
 
 const CATEGORY_CONFIG: Record<HealthCategory, { label: string; icon: keyof typeof Icons }> = {
   PRICE_STALENESS: { label: "Prices", icon: "TrendingUp" },
-  FX_INTEGRITY: { label: "FX Rates", icon: "ArrowLeftRight" },
+  FX_INTEGRITY: { label: "Exchange Rates", icon: "ArrowLeftRight" },
   CLASSIFICATION: { label: "Categories", icon: "Tag" },
   DATA_CONSISTENCY: { label: "Data", icon: "Database" },
   ACCOUNT_CONFIGURATION: { label: "Accounts", icon: "Settings" },
@@ -114,14 +116,14 @@ function HealthIssueRow({
 
   return (
     <div
-      className="hover:bg-muted/50 group flex cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors"
+      className="hover:bg-muted/50 group/row flex cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors"
       onClick={onClick}
     >
       <SeverityDot severity={issue.severity} />
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">
+          <span className="line-clamp-2 text-sm font-medium sm:line-clamp-1">
             {translateIssueText(t, issue, "title")}
           </span>
           {issue.affectedCount > 0 && (
@@ -136,12 +138,13 @@ function HealthIssueRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5">
+        {/* On a phone the title needs the room; the issue's sheet names its category. */}
         <Tooltip>
           <TooltipTrigger
             render={
               <Badge
                 variant="outline"
-                className="text-muted-foreground text-2xs h-6 gap-1 px-2 font-normal"
+                className="text-muted-foreground text-2xs hidden h-6 gap-1 px-2 font-normal sm:inline-flex"
               />
             }
           >
@@ -175,7 +178,8 @@ function HealthIssueRow({
         <Button
           size="icon"
           variant="ghost"
-          className="text-muted-foreground h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"
+          // Shown on touch screens, which can't hover to reveal it.
+          className={cn("text-muted-foreground h-7 w-7", HOVER_SLOT)}
           onClick={(e: React.MouseEvent) => {
             e.stopPropagation();
             onDismiss();
@@ -273,6 +277,17 @@ export default function HealthPage() {
   const runChecksMutation = useRunHealthChecks();
   const dismissMutation = useDismissHealthIssue();
   const fixMutation = useExecuteHealthFix();
+  // A fix that resolves the open issue removes it from the fresh status, so its
+  // sheet closes with it, as after a dismiss.
+  const runFix = (action: FixAction) =>
+    fixMutation.mutate(action, {
+      onSuccess: ({ status }) => {
+        if (!status) return;
+        setSelectedIssue((current) =>
+          current && !status.issues.some((issue) => issue.id === current.id) ? null : current,
+        );
+      },
+    });
 
   const handleRefresh = () => {
     runChecksMutation.mutate();
@@ -372,7 +387,7 @@ export default function HealthPage() {
             </div>
 
             {/* Issues List */}
-            <div className="bg-card rounded-lg border">
+            <div className={cardSurfaceClassName}>
               {filteredIssues && filteredIssues.length > 0 ? (
                 <div className="divide-y">
                   {filteredIssues.map((issue) => (
@@ -408,18 +423,24 @@ export default function HealthPage() {
         }}
         onDismiss={() => {
           if (selectedIssue) {
-            dismissMutation.mutate({
-              issueId: selectedIssue.id,
-              dataHash: selectedIssue.dataHash,
-            });
+            const dismissedId = selectedIssue.id;
+            dismissMutation.mutate(
+              { issueId: dismissedId, dataHash: selectedIssue.dataHash },
+              // A dismissed issue leaves the list, so its sheet closes with it.
+              // Another issue's sheet, opened while this one was saving, stays.
+              {
+                onSuccess: () =>
+                  setSelectedIssue((current) => (current?.id === dismissedId ? null : current)),
+              },
+            );
           }
         }}
         onFix={() => {
           if (selectedIssue?.fixAction) {
-            fixMutation.mutate(selectedIssue.fixAction);
+            runFix(selectedIssue.fixAction);
           }
         }}
-        onRunFixAction={(action) => fixMutation.mutate(action)}
+        onRunFixAction={runFix}
         isDismissing={dismissMutation.isPending}
         isFixing={fixMutation.isPending}
       />

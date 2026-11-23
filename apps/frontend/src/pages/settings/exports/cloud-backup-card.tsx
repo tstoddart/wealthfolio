@@ -1,4 +1,9 @@
 import { cn } from "@/lib/utils";
+import {
+  backendError,
+  BACKUP_REAUTHENTICATION_REQUIRED,
+  BACKUP_MANUAL_LIMIT,
+} from "@/lib/backend-error";
 import { Fragment, useState } from "react";
 import { ShieldCheckIcon } from "@phosphor-icons/react/dist/csr/ShieldCheck";
 import type { TFunction } from "i18next";
@@ -52,6 +57,7 @@ import {
 import { formatBackupSize } from "./backup-size";
 import { backupDate, backupState, useCloudBackups } from "./use-cloud-backups";
 import { Alert, AlertDescription } from "@wealthfolio/ui/components/ui/alert";
+import { copyText } from "@wealthfolio/ui/lib/clipboard";
 
 type Flow = "setup" | "resume" | "unlock" | "replace" | "pause" | "help";
 /** The one operation in progress: `restore:<id>` and `download:<id>` name their row. */
@@ -298,7 +304,7 @@ const COMPACT_HISTORY_LIMIT = 3;
 
 /** List variant of the summary for the Connect page's side column: status line, latest copies. */
 export function CloudBackupCompactSummary() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const formatting = useDateFormatting();
   const localization = useLocalizationSettings();
   const { available, status } = useCloudBackups();
@@ -353,7 +359,7 @@ export function CloudBackupCompactSummary() {
                 const date = backupDate(point.publishedAt);
                 const details = [
                   date && formatting.formatTime(date, { timeStyle: "short" }),
-                  formatBackupSize(point.sizeBytes, i18n.language),
+                  formatBackupSize(point.sizeBytes, localization.locale),
                   point.metadata?.device_name,
                 ].filter(Boolean);
                 return (
@@ -411,7 +417,8 @@ export function CloudBackupCard() {
 }
 
 function CloudBackupPanel({ backup }: { backup: ReturnType<typeof useCloudBackups> }) {
-  const { t, i18n } = useTranslation();
+  const localization = useLocalizationSettings();
+  const { t } = useTranslation();
   const formatting = useDateFormatting();
   const { status, profile, isMobile } = backup;
   const canRestore = isTauri && !isMobile;
@@ -460,14 +467,15 @@ function CloudBackupPanel({ backup }: { backup: ReturnType<typeof useCloudBackup
     setReauth(false);
   }
   function failed(cause: unknown) {
-    const recentLogin = String(cause).includes("BACKUP_REAUTHENTICATION_REQUIRED");
+    const error = backendError(cause);
+    const recentLogin = error?.errorCode === BACKUP_REAUTHENTICATION_REQUIRED;
     setReauth(recentLogin);
     setError({
-      cause,
+      cause: error,
       message: t(
         recentLogin
           ? "settings:cloud_backup_reauth"
-          : String(cause).includes("BACKUP_MANUAL_LIMIT")
+          : error?.errorCode === BACKUP_MANUAL_LIMIT
             ? "settings:cloud_backup_manual_limit"
             : "settings:cloud_backup_failed",
       ),
@@ -607,10 +615,7 @@ function CloudBackupPanel({ backup }: { backup: ReturnType<typeof useCloudBackup
   };
   const locked = !!data?.hasKey && !data.keyReady;
   return (
-    <Card
-      className="overflow-hidden rounded-2xl shadow-none"
-      aria-label={t("settings:cloud_backup_title")}
-    >
+    <Card className="overflow-hidden" aria-label={t("settings:cloud_backup_title")}>
       <CardHeader className="space-y-4 p-5 sm:p-6">
         <BackupCardHeader
           brand
@@ -811,7 +816,7 @@ function CloudBackupPanel({ backup }: { backup: ReturnType<typeof useCloudBackup
                   : t("settings:backup_unknown_date");
                 const download = {
                   icon: Icons.Download,
-                  label: t("settings:cloud_backup_download"),
+                  label: t("common:download"),
                   onSelect: () =>
                     void perform(`download:${point.backupId}`, () =>
                       downloadCloudBackup(point.backupId),
@@ -819,7 +824,7 @@ function CloudBackupPanel({ backup }: { backup: ReturnType<typeof useCloudBackup
                 };
                 const remove = {
                   icon: Icons.Trash2,
-                  label: t("settings:cloud_backup_delete"),
+                  label: t("common:delete"),
                   onSelect: () => showDelete(point.backupId),
                   destructive: true,
                 };
@@ -833,7 +838,7 @@ function CloudBackupPanel({ backup }: { backup: ReturnType<typeof useCloudBackup
                     }
                     meta={[
                       date && formatting.formatTime(date, { timeStyle: "short" }),
-                      formatBackupSize(point.sizeBytes, i18n.language),
+                      formatBackupSize(point.sizeBytes, localization.locale),
                     ]}
                     details={[point.metadata?.device_name, point.metadata?.profile_name]}
                     actions={
@@ -890,7 +895,7 @@ function CloudBackupPanel({ backup }: { backup: ReturnType<typeof useCloudBackup
       >
         <DialogContent
           className="sm:max-w-md"
-          mobileClassName="h-auto max-h-[85dvh] overflow-y-auto"
+          mobileClassName="h-auto [--overlay-max-height:85dvh] overflow-y-auto"
           showCloseButton={!busy && !recoveryCode}
         >
           <DialogHeader className="pe-6 text-start">
@@ -958,8 +963,7 @@ function CloudBackupPanel({ backup }: { backup: ReturnType<typeof useCloudBackup
                   size="sm"
                   className="mt-3 pointer-coarse:h-11"
                   onClick={() => {
-                    void navigator.clipboard
-                      .writeText(recoveryCode)
+                    void copyText(recoveryCode)
                       .then(() => {
                         setCopied(true);
                       })

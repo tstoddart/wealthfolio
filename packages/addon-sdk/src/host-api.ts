@@ -26,6 +26,8 @@ import type {
   ImportActivitiesResult,
   Asset,
   AlternativeAssetHolding,
+  AllocationDrift,
+  AllocationTarget,
   ContributionLimit,
   DepositsCalculation,
   ExchangeRate,
@@ -226,10 +228,12 @@ export interface ActivitiesAPI {
   saveImportMapping(mapping: ImportMappingData): Promise<ImportMappingData>;
 
   /**
-   * Get the linked transfer pair for a given activity
+   * Get the linked pair for a given activity: an internal transfer, or a
+   * conversion, whose CONVERSION_OUT row is `transferOut` and CONVERSION_IN
+   * row `transferIn`.
    * @param activityId Activity identifier
-   * @returns Promise resolving to the transfer pair, or null when the activity
-   * is not part of one. Rejects if the activity does not exist.
+   * @returns Promise resolving to the pair, or null when the activity is not
+   * part of one. Rejects if the activity does not exist.
    */
   getTransferPair(activityId: string): Promise<InternalTransferPairResponse | null>;
 
@@ -377,6 +381,31 @@ export interface AlternativeAssetsAPI {
    * @returns Promise resolving to array of alternative asset holdings
    */
   getAll(): Promise<AlternativeAssetHolding[]>;
+}
+
+/**
+ * Allocation target APIs. Read-only: creating/editing targets is only available
+ * in the Wealthfolio UI. Each function requires its own `allocation-targets`
+ * grant.
+ */
+export interface AllocationTargetsAPI {
+  /**
+   * Get the user's allocation targets, archived ones excluded, each with its
+   * category weights. Several targets can share a scope.
+   * Requires allocation-targets.getAll.
+   * @returns Promise resolving to array of allocation targets
+   */
+  getAll(): Promise<AllocationTarget[]>;
+
+  /**
+   * Compare current holdings with a target, by category of the target's
+   * taxonomy, over the target's own scope. Values are in the base currency.
+   * Runs a live valuation, so call it on demand rather than on a timer.
+   * Requires allocation-targets.getDrift.
+   * @param targetId Allocation target identifier
+   * @returns Promise resolving to the comparison, or null when no live target has this id
+   */
+  getDrift(targetId: string): Promise<AllocationDrift | null>;
 }
 
 /**
@@ -624,7 +653,8 @@ export interface GoalsAPI {
   create(goal: unknown): Promise<Goal>;
 
   /**
-   * Update an existing goal
+   * Update an existing goal's editable inputs. Health, progress and projection
+   * summary fields are calculated by the host; values supplied for them are ignored.
    * @param goal Updated goal data
    * @returns Promise resolving to updated goal
    */
@@ -711,6 +741,11 @@ export interface FilesAPI {
  * Secrets management APIs
  * Provides secure storage for addon secrets using the system keyring
  * Each addon can only access its own secrets
+ * Windows values up to 1 MiB of UTF-8 data are transparently chunked by the host.
+ * The system credential store's available capacity may impose a lower limit.
+ * Reads reject incomplete chunked values; callers never receive partial data.
+ * Host errors may carry a stable `code` property, including `SECRET_TOO_LARGE`
+ * and `SECRET_STORE_UNAVAILABLE`. Error messages are localized; do not parse them.
  */
 export interface SecretsAPI {
   /**
@@ -1035,6 +1070,9 @@ export interface HostAPI {
 
   /** Alternative assets (property, vehicle, liability, ...) operations */
   alternativeAssets: AlternativeAssetsAPI;
+
+  /** Allocation targets and how holdings compare to them (read-only) */
+  allocationTargets: AllocationTargetsAPI;
 
   /** Quote management operations */
   quotes: QuotesAPI;

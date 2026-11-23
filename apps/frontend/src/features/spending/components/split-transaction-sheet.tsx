@@ -1,3 +1,5 @@
+import { getCategoryLabel } from "@/lib/taxonomy-labels";
+import type { TFunction } from "i18next";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -24,12 +26,14 @@ import {
   SheetTitle,
   useAmountFormatting,
   Spinner,
+  useNumberFormatting,
 } from "@wealthfolio/ui";
 
 import {
   canDistributeSplitUnits,
   distributeEvenlyUnits,
   distributeRemainingUnits,
+  significantDecimals,
   splitUnitsToAmount,
   toSplitUnits,
 } from "../lib/split-utils";
@@ -90,12 +94,15 @@ function makeLine(taxonomyId: string, categoryId = "", amount?: number, note = "
 }
 
 function categoryLabel(
+  t: TFunction,
   category: TaxonomyCategory | undefined,
   categories: Map<string, TaxonomyCategory>,
 ) {
   if (!category) return null;
   const parent = category.parentId ? categories.get(category.parentId) : null;
-  return parent ? `${parent.name} / ${category.name}` : category.name;
+  return parent
+    ? `${getCategoryLabel(t, parent.taxonomyId, parent.id, parent.name)} / ${getCategoryLabel(t, category.taxonomyId, category.id, category.name)}`
+    : getCategoryLabel(t, category.taxonomyId, category.id, category.name);
 }
 
 function fallbackLineColor(index: number) {
@@ -123,14 +130,19 @@ export function SplitTransactionSheet({
 }: SplitTransactionSheetProps) {
   const formatting = useAmountFormatting();
   const { t } = useTranslation();
+  const numbers = useNumberFormatting();
   const isMobile = useIsMobileViewport();
   const activity = row?.activity ?? null;
   const taxonomyId = taxonomyForBucket(activity?.cashFlowBucket);
   const currency = activity?.currency || "USD";
   const currencySymbol = formatting.formatCurrencySymbol(currency);
-  // Splits are summed in the currency's fraction digits, but never fewer than two,
-  // so a total with cents in a currency without minor units can still be split.
-  const splitDecimals = Math.max(2, formatting.currencyFractionDigits(currency));
+  // Keep at least cents, the currency's fraction digits, and the total's own decimals
+  // so the split lines can add up to the stored amount.
+  const splitDecimals = Math.max(
+    2,
+    formatting.currencyFractionDigits(currency),
+    significantDecimals(activity?.amount),
+  );
   const totalUnits = toSplitUnits(activity?.amount, splitDecimals);
   const totalAmount = splitUnitsToAmount(Math.abs(totalUnits), splitDecimals);
 
@@ -319,7 +331,7 @@ export function SplitTransactionSheet({
               <ul className="mt-2 space-y-1">
                 {staleSplits.map((split) => (
                   <li key={split.id}>
-                    {categoryLabel(categories.get(split.categoryId), categories) ??
+                    {categoryLabel(t, categories.get(split.categoryId), categories) ??
                       split.categoryId}
                     {" · "}
                     {formatting.formatPrice(Number(split.amount), currency)} {currency}
@@ -383,7 +395,7 @@ export function SplitTransactionSheet({
               <div className="border-border divide-border divide-y border-y">
                 {lines.map((line, index) => {
                   const category = categories.get(line.categoryId);
-                  const label = categoryLabel(category, categories);
+                  const label = categoryLabel(t, category, categories);
                   const color = splitLineColor(category, index);
                   const amountUnits = toSplitUnits(line.amount, splitDecimals);
                   const showNoteInput =
@@ -446,7 +458,9 @@ export function SplitTransactionSheet({
                         </div>
 
                         <span className="bg-muted/60 text-muted-foreground inline-flex h-8 items-center rounded-md px-2 text-xs font-medium tabular-nums">
-                          {linePercentage(amountUnits, totalAbsUnits)}%
+                          {numbers.formatPercent(linePercentage(amountUnits, totalAbsUnits) / 100, {
+                            digits: 0,
+                          })}
                         </span>
                         <div className="relative w-24">
                           <span className="text-muted-foreground pointer-events-none absolute start-2 top-1/2 -translate-y-1/2 text-xs">
@@ -522,12 +536,7 @@ export function SplitTransactionSheet({
         )}
 
         <SheetFooter
-          className={cn(
-            "border-t",
-            isMobile
-              ? "border-border px-4 py-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)]"
-              : "gap-2 pt-4",
-          )}
+          className={cn("border-t", isMobile ? "border-border px-4 py-4 pb-4" : "gap-2 pt-4")}
         >
           {isMobile ? (
             <div className="flex w-full flex-col gap-2">
@@ -604,7 +613,7 @@ export function SplitTransactionSheet({
               {t("spending:split.replaceDescription", {
                 count: replacement?.expectedSplits.length ?? 0,
                 category: replacement
-                  ? (categoryLabel(categories.get(replacement.categoryId), categories) ??
+                  ? (categoryLabel(t, categories.get(replacement.categoryId), categories) ??
                     replacement.categoryId)
                   : "",
               })}

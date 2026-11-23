@@ -1,3 +1,4 @@
+import { getTaxonomyLabel, getCategoryLabel } from "@/lib/taxonomy-labels";
 import { updateToolResult } from "@/adapters";
 import { TickerAvatar } from "@/components/ticker-avatar";
 import { useReplaceAssetTaxonomyAssignments } from "@/hooks/use-taxonomies";
@@ -14,6 +15,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  useNumericDraft,
   useDateFormatting,
   useNumberFormatting,
   type FormattingApi,
@@ -216,16 +218,20 @@ function validatePreview(
   const proposedAssignments = result.proposedAssignments ?? [];
   const categoryIds = new Set<string>();
   for (const row of proposedAssignments) {
+    const categoryName = getCategoryLabel(
+      t,
+      result.taxonomy?.taxonomyId ?? "",
+      row.categoryId,
+      row.categoryName,
+    );
     if (row.weightBasisPoints < 0 || row.weightBasisPoints > 10000) {
-      issues.push(t("ai:assetClassification.invalidWeight", { categoryName: row.categoryName }));
+      issues.push(t("ai:assetClassification.invalidWeight", { categoryName }));
     }
 
     if (row.weightBasisPoints === 0) continue;
 
     if (categoryIds.has(row.categoryId)) {
-      issues.push(
-        t("ai:assetClassification.duplicateCategory", { categoryName: row.categoryName }),
-      );
+      issues.push(t("ai:assetClassification.duplicateCategory", { categoryName }));
     }
     categoryIds.add(row.categoryId);
   }
@@ -266,18 +272,6 @@ function validateEditedPreview(
     },
     t,
   );
-}
-
-function basisPointsToPercentInput(weightBasisPoints: number): string {
-  const percent = weightBasisPoints / 100;
-  return Number.isInteger(percent) ? String(percent) : percent.toFixed(2);
-}
-
-function percentInputToBasisPoints(value: string): number | null {
-  if (value.trim() === "") return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  return Math.min(10000, Math.max(0, Math.round(parsed * 100)));
 }
 
 function sumPositiveWeights(rows: AssetClassificationAssignmentPreview[]): number {
@@ -354,21 +348,59 @@ function buildComparisonRows(
   return rows;
 }
 
+interface ClassificationPercentInputProps {
+  row: ClassificationComparisonRow;
+  taxonomyId: string;
+  disabled: boolean;
+  onNewWeightChange: (row: ClassificationComparisonRow, weightBasisPoints: number) => void;
+}
+
+function ClassificationPercentInput({
+  row,
+  taxonomyId,
+  disabled,
+  onNewWeightChange,
+}: ClassificationPercentInputProps) {
+  const { t } = useTranslation();
+  const percent = row.newWeightBasisPoints / 100;
+  const draft = useNumericDraft(percent, {
+    acceptPercent: true,
+    minimumFractionDigits: Number.isInteger(percent) ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+  return (
+    <input
+      {...draft.inputProps}
+      type="text"
+      inputMode="decimal"
+      aria-label={t("ai:assetClassification.newPercentLabel", {
+        categoryName: getCategoryLabel(t, taxonomyId, row.categoryId, row.categoryName),
+      })}
+      className="h-6 w-full bg-transparent ps-1.5 pe-4 text-end text-xs font-medium outline-none disabled:cursor-not-allowed"
+      disabled={disabled}
+      onBlur={draft.reset}
+      onChange={(event) => {
+        const result = draft.setText(event.currentTarget.value);
+        if (result.status === "valid")
+          onNewWeightChange(row, Math.min(10000, Math.max(0, Math.round(result.value * 100))));
+      }}
+    />
+  );
+}
+
 function ClassificationComparisonTable({
+  taxonomyId,
   currentRows,
   proposedRows,
   emptyLabel,
   disabled,
-  draftPercentValues,
-  onDraftPercentValueChange,
   onNewWeightChange,
 }: {
+  taxonomyId: string;
   currentRows: AssetClassificationAssignmentPreview[];
   proposedRows: AssetClassificationAssignmentPreview[];
   emptyLabel: string;
   disabled: boolean;
-  draftPercentValues: Record<string, string>;
-  onDraftPercentValueChange: (categoryId: string, value: string) => void;
   onNewWeightChange: (row: ClassificationComparisonRow, weightBasisPoints: number) => void;
 }) {
   const formatting = useNumberFormatting();
@@ -405,13 +437,15 @@ function ClassificationComparisonTable({
                   style={row.categoryColor ? { backgroundColor: row.categoryColor } : undefined}
                 />
                 <div className="min-w-0">
-                  <div className="truncate text-xs font-medium sm:text-sm">{row.categoryName}</div>
+                  <div className="truncate text-xs font-medium sm:text-sm">
+                    {getCategoryLabel(t, taxonomyId, row.categoryId, row.categoryName)}
+                  </div>
                 </div>
               </div>
               <div className="text-end">
                 <span
                   aria-label={t("ai:assetClassification.currentPercentLabel", {
-                    categoryName: row.categoryName,
+                    categoryName: getCategoryLabel(t, taxonomyId, row.categoryId, row.categoryName),
                   })}
                   className={cn(
                     "bg-muted/60 inline-flex min-w-[3.75rem] justify-end rounded-md px-1.5 py-0.5 text-xs font-medium sm:min-w-[4.5rem]",
@@ -432,35 +466,11 @@ function ClassificationComparisonTable({
                     disabled && "opacity-70",
                   )}
                 >
-                  <input
-                    aria-label={t("ai:assetClassification.newPercentLabel", {
-                      categoryName: row.categoryName,
-                    })}
-                    className="h-6 w-full bg-transparent ps-1.5 pe-4 text-end text-xs font-medium outline-none disabled:cursor-not-allowed"
+                  <ClassificationPercentInput
+                    row={row}
+                    taxonomyId={taxonomyId}
                     disabled={disabled}
-                    inputMode="decimal"
-                    type="text"
-                    value={
-                      draftPercentValues[row.categoryId] ??
-                      basisPointsToPercentInput(row.newWeightBasisPoints)
-                    }
-                    onBlur={(event) => {
-                      const basisPoints = percentInputToBasisPoints(event.currentTarget.value);
-                      onDraftPercentValueChange(
-                        row.categoryId,
-                        basisPointsToPercentInput(basisPoints ?? row.newWeightBasisPoints),
-                      );
-                    }}
-                    onChange={(event) => {
-                      const nextValue = event.currentTarget.value.replace(/,/g, "");
-                      if (!/^\d*\.?\d*$/.test(nextValue)) return;
-
-                      onDraftPercentValueChange(row.categoryId, nextValue);
-
-                      const basisPoints = percentInputToBasisPoints(nextValue);
-                      if (basisPoints === null) return;
-                      onNewWeightChange(row, basisPoints);
-                    }}
+                    onNewWeightChange={onNewWeightChange}
                   />
                   <span className="text-2xs pointer-events-none absolute end-1.5">%</span>
                 </div>
@@ -489,7 +499,7 @@ function ClassificationComparisonTable({
 function formatExistingAllocation(
   rows: AssetClassificationAssignmentPreview[],
   t: TFunction,
-  formatting: Pick<FormattingApi, "formatDecimal">,
+  formatting: Pick<FormattingApi, "formatPercent">,
 ) {
   if (rows.length === 0) return t("ai:assetClassification.noExistingAllocation");
 
@@ -518,7 +528,6 @@ export function AssetClassificationToolUIContentImpl({
   const [editedProposedAssignments, setEditedProposedAssignments] = useState<
     AssetClassificationAssignmentPreview[] | null
   >(null);
-  const [draftPercentValues, setDraftPercentValues] = useState<Record<string, string>>({});
   const parsedResult = useMemo(() => normalizeAssetClassificationResult(result), [result]);
   const proposedAssignments = editedProposedAssignments ?? parsedResult?.proposedAssignments ?? [];
   const unallocated = 10000 - sumPositiveWeights(proposedAssignments);
@@ -572,13 +581,6 @@ export function AssetClassificationToolUIContentImpl({
   const appliedCategoryCount = proposedAssignments.filter(
     (assignment) => assignment.weightBasisPoints > 0,
   ).length;
-
-  const handleDraftPercentValueChange = (categoryId: string, value: string) => {
-    setDraftPercentValues((current) => ({
-      ...current,
-      [categoryId]: value,
-    }));
-  };
 
   const handleNewWeightChange = (row: ClassificationComparisonRow, weightBasisPoints: number) => {
     setEditedProposedAssignments((current) => {
@@ -697,7 +699,7 @@ export function AssetClassificationToolUIContentImpl({
                 })}
             </CardTitle>
             <p className="text-muted-foreground mt-1 text-xs">
-              {parsedResult.taxonomy.name}
+              {getTaxonomyLabel(t, parsedResult.taxonomy.taxonomyId, parsedResult.taxonomy.name)}
               {selectedAsset ? ` · ${selectedAsset.currency}` : ""}
               {selectedAsset?.exchangeMic ? ` · ${selectedAsset.exchangeMic}` : ""}
             </p>
@@ -808,6 +810,8 @@ export function AssetClassificationToolUIContentImpl({
         </div>
 
         <ClassificationComparisonTable
+          key={selectedAssetId}
+          taxonomyId={parsedResult.taxonomy.taxonomyId}
           currentRows={currentAssignments}
           proposedRows={proposedAssignments}
           emptyLabel={
@@ -816,8 +820,6 @@ export function AssetClassificationToolUIContentImpl({
               : t("ai:assetClassification.chooseAsset")
           }
           disabled={isApplied || isSubmitting}
-          draftPercentValues={draftPercentValues}
-          onDraftPercentValueChange={handleDraftPercentValueChange}
           onNewWeightChange={handleNewWeightChange}
         />
 

@@ -1,3 +1,6 @@
+import { useIsMobileViewport } from "@/hooks/use-platform";
+import { cn } from "@/lib/utils";
+import { getTaxonomyLabel } from "@/lib/taxonomy-labels";
 import { useEffectOnChange } from "@/hooks/use-effect-on-change";
 import { getExchanges, resolveSymbolQuote } from "@/adapters";
 import { MultiSelectTaxonomy } from "@/components/classification/multi-select-taxonomy";
@@ -11,6 +14,14 @@ import type { Asset, Quote } from "@/lib/types";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   CurrencyInput,
   DatePickerInput,
   Label,
@@ -121,6 +132,7 @@ const normalizeMic = (mic?: string | null): string => mic?.trim().toUpperCase() 
 
 const PROVIDER_SYMBOL_HINTS: Record<string, string> = {
   YAHOO: "e.g. AAPL, LYMS.DE",
+  AMFI: "e.g. 122639, INF879O01027",
   COINGECKO: "e.g. bitcoin, ethereum",
   TWELVEDATA: "e.g. AAPL, EUR/USD",
 };
@@ -427,7 +439,11 @@ function SymbolMappingRow({
               <FormControl>
                 <div className="relative flex items-center">
                   <Input
-                    placeholder={getSymbolPlaceholder(provider ?? "")}
+                    placeholder={
+                      provider === "MOEX"
+                        ? t("asset:editSheet.moex_symbol_placeholder")
+                        : getSymbolPlaceholder(provider ?? "")
+                    }
                     {...{
                       ...symbolField,
                       value: (symbolField.value as string | undefined) ?? "",
@@ -453,6 +469,11 @@ function SymbolMappingRow({
                   </span>
                 </div>
               </FormControl>
+              {provider === "MOEX" && (
+                <p className="text-muted-foreground text-xs">
+                  {t("asset:editSheet.moex_symbol_hint")}
+                </p>
+              )}
             </FormItem>
           )}
         />
@@ -484,6 +505,7 @@ export function AssetEditSheet({
   const dateFormatting = useDateFormatting();
 
   const { t } = useTranslation();
+  const isMobile = useIsMobileViewport();
   const EDIT_INSTRUMENT_TYPE_OPTIONS = useMemo(
     () =>
       [
@@ -497,6 +519,8 @@ export function AssetEditSheet({
   );
   const [activeTab, setActiveTab] = useState<EditTab>(defaultTab);
   const [logoDialogOpen, setLogoDialogOpen] = useState(false);
+  const [showDiscardDialog, setShowDiscardDialog] = useState(false);
+  const generalFormId = useId();
   const [symbolValidations, setSymbolValidations] = useState<
     Record<string, SymbolValidationStatus>
   >({});
@@ -565,8 +589,12 @@ export function AssetEditSheet({
       });
     }
 
+    // Funds that don't trade on an exchange, such as a broker's own funds. An
+    // empty value saves as null, which clears the exchange.
+    options.unshift({ value: "", label: t("asset:editSheet.no_exchange") });
+
     return options;
-  }, [exchanges, currentMic, asset?.exchangeName]);
+  }, [exchanges, currentMic, asset?.exchangeName, t]);
 
   // Split taxonomies by selection type
   const { singleSelectTaxonomies, multiSelectTaxonomies } = useMemo(() => {
@@ -707,7 +735,10 @@ export function AssetEditSheet({
           instrumentType: values.instrumentType || null,
           quoteMode: values.quoteMode,
           quoteCcy: values.quoteCcy,
-          instrumentExchangeMic: normalizedMic || null,
+          // null clears the exchange, so send it only when there is one to
+          // clear; an untouched empty field leaves a newer stored one alone.
+          instrumentExchangeMic:
+            normalizedMic || (normalizeMic(asset.instrumentExchangeMic) ? null : undefined),
           providerConfig: serializedOverrides,
           metadata: newMetadata,
         });
@@ -723,6 +754,15 @@ export function AssetEditSheet({
 
   const isManualMode = form.watch("quoteMode") === QuoteMode.MANUAL;
   const isSaving = updateAssetProfileMutation.isPending;
+  const { isDirty } = form.formState;
+  const requestClose = () => {
+    if (isSaving) return;
+    if (isDirty) {
+      setShowDiscardDialog(true);
+    } else {
+      onOpenChange(false);
+    }
+  };
 
   // Check if current asset kind is system-managed (shouldn't allow editing)
   const isSystemManagedKind = asset?.kind === "FX";
@@ -730,8 +770,20 @@ export function AssetEditSheet({
   if (!asset) return null;
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="inline-end" className="pb-safe flex h-full w-full flex-col sm:max-w-2xl">
+    <Sheet
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (nextOpen) onOpenChange(true);
+        else requestClose();
+      }}
+    >
+      <SheetContent
+        side={isMobile ? "bottom" : "inline-end"}
+        className={cn(
+          "flex h-full flex-col",
+          isMobile ? "mx-1 rounded-t-4xl [--overlay-max-height:90dvh]" : "w-full sm:max-w-2xl",
+        )}
+      >
         <SheetHeader className="shrink-0 pb-4">
           <div className="flex items-center gap-3">
             <EditableTickerAvatar
@@ -790,7 +842,11 @@ export function AssetEditSheet({
             {/* General Tab */}
             <TabsContent value="general" className="mt-0 h-full">
               <Form {...form}>
-                <form onSubmit={form.handleSubmit(handleSave)} className="space-y-6">
+                <form
+                  id={generalFormId}
+                  onSubmit={form.handleSubmit(handleSave)}
+                  className="space-y-6"
+                >
                   {/* FX: Base and Quote Currency (both disabled) */}
                   {asset.kind === "FX" ? (
                     <div className="space-y-6">
@@ -872,17 +928,6 @@ export function AssetEditSheet({
                           </FormItem>
                         )}
                       />
-
-                      <div className="flex justify-end gap-3 pt-4">
-                        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                          {t("common:cancel")}
-                        </Button>
-                        <Button type="submit" disabled={isSaving}>
-                          {isSaving
-                            ? t("asset:editSheet.saving")
-                            : t("asset:editSheet.save_changes")}
-                        </Button>
-                      </div>
                     </div>
                   ) : (
                     /* Regular assets: Symbol, Currency, Name, Notes, Asset Type, Exchange */
@@ -1015,6 +1060,7 @@ export function AssetEditSheet({
                               <FormLabel>{t("asset:editSheet.exchange")}</FormLabel>
                               <FormControl>
                                 <SearchableSelect
+                                  aria-label={t("asset:editSheet.exchange")}
                                   options={exchangeOptions}
                                   value={field.value ?? ""}
                                   onValueChange={field.onChange}
@@ -1136,26 +1182,6 @@ export function AssetEditSheet({
                           />
                         </div>
                       )}
-
-                      <div className="flex justify-end gap-3 pt-4">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          onClick={() => onOpenChange(false)}
-                          disabled={isSaving}
-                        >
-                          {t("common:cancel")}
-                        </Button>
-                        <Button type="submit" disabled={isSaving}>
-                          {isSaving ? (
-                            <span className="flex items-center gap-2">
-                              <Spinner className="h-4 w-4" /> {t("asset:editSheet.saving_short")}
-                            </span>
-                          ) : (
-                            t("asset:editSheet.save_changes_lower")
-                          )}
-                        </Button>
-                      </div>
                     </div>
                   )}
                 </form>
@@ -1183,7 +1209,7 @@ export function AssetEditSheet({
                       key={taxonomy.id}
                       taxonomyId={taxonomy.id}
                       assetId={asset.id}
-                      label={taxonomy.name}
+                      label={getTaxonomyLabel(t, taxonomy.id, taxonomy.name)}
                     />
                   ))}
 
@@ -1193,7 +1219,7 @@ export function AssetEditSheet({
                       key={taxonomy.id}
                       taxonomyId={taxonomy.id}
                       assetId={asset.id}
-                      label={taxonomy.name}
+                      label={getTaxonomyLabel(t, taxonomy.id, taxonomy.name)}
                     />
                   ))}
               </div>
@@ -1413,31 +1439,6 @@ export function AssetEditSheet({
                         )}
                       </div>
                     )}
-
-                    {/* Save Actions */}
-                    <div className="flex justify-end gap-3 border-t pt-4">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={() => onOpenChange(false)}
-                        disabled={isSaving}
-                      >
-                        {t("common:cancel")}
-                      </Button>
-                      <Button
-                        type="button"
-                        onClick={form.handleSubmit(handleSave)}
-                        disabled={isSaving}
-                      >
-                        {isSaving ? (
-                          <span className="flex items-center gap-2">
-                            <Spinner className="h-4 w-4" /> {t("asset:editSheet.saving_short")}
-                          </span>
-                        ) : (
-                          t("asset:editSheet.save_changes_lower")
-                        )}
-                      </Button>
-                    </div>
                   </div>
                 </Form>
               </div>
@@ -1445,16 +1446,51 @@ export function AssetEditSheet({
           </div>
         </Tabs>
 
-        <div className="mt-auto border-t pt-4 sm:hidden">
+        <div className="mt-auto flex shrink-0 justify-end gap-3 border-t pt-4">
           <Button
             type="button"
-            variant="ghost"
-            className="w-full"
-            onClick={() => onOpenChange(false)}
+            variant="outline"
+            className="flex-1 sm:flex-none"
+            onClick={requestClose}
+            disabled={isSaving}
           >
-            {t("asset:editSheet.close")}
+            {activeTab === "classification" ? t("asset:editSheet.close") : t("common:cancel")}
           </Button>
+          {activeTab !== "classification" && (
+            <Button
+              type={activeTab === "general" ? "submit" : "button"}
+              form={activeTab === "general" ? generalFormId : undefined}
+              className="flex-1 sm:flex-none"
+              onClick={activeTab === "market-data" ? form.handleSubmit(handleSave) : undefined}
+              disabled={isSaving}
+            >
+              {isSaving
+                ? t("asset:editSheet.saving_short")
+                : t("asset:editSheet.save_changes_lower")}
+            </Button>
+          )}
         </div>
+        <AlertDialog open={showDiscardDialog} onOpenChange={setShowDiscardDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t("holdings:discard_changes_title")}</AlertDialogTitle>
+              <AlertDialogDescription>{t("holdings:discard_changes_desc")}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t("holdings:keep_editing")}</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                onClick={() => {
+                  form.reset();
+                  setShowDiscardDialog(false);
+                  onOpenChange(false);
+                }}
+              >
+                {t("holdings:discard")}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SheetContent>
     </Sheet>
   );

@@ -10,7 +10,7 @@ export const buttonVariants = cva(
         default:
           "border-(color:--button-border) bg-primary bg-(image:--button-image) shadow-(--button-shadow) font-(weight:--button-weight) text-primary-foreground hover:bg-primary/90 disabled:bg-none disabled:shadow-none data-disabled:bg-none data-disabled:shadow-none",
         destructive:
-          "bg-destructive-subtle font-(weight:--button-weight) text-destructive-subtle-foreground hover:bg-destructive-subtle-border/50",
+          "border-(color:--button-destructive-border) bg-(--button-destructive-bg) shadow-(--button-destructive-shadow) font-(weight:--button-weight) text-(color:--button-destructive-foreground) hover:bg-(--button-destructive-hover-bg) disabled:shadow-none data-disabled:shadow-none",
         outline:
           "border border-(color:--button-outline-border) bg-(--button-outline-bg) bg-(image:--button-outline-image) shadow-(--button-outline-shadow) hover:bg-(--button-outline-hover-bg) hover:text-accent-foreground aria-[haspopup]:aria-expanded:bg-accent aria-[haspopup]:aria-expanded:text-accent-foreground dark:aria-[haspopup]:aria-expanded:bg-input/50",
         secondary:
@@ -25,14 +25,19 @@ export const buttonVariants = cva(
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-(--control-size) px-5 py-2.5 has-[>svg]:px-4",
-        xs: "h-8 gap-1 px-2.5 has-[>svg]:px-2",
-        sm: "h-9 gap-1.5 px-4 has-[>svg]:px-3",
+        default:
+          "h-(--control-size) px-5 py-2.5 has-[>svg]:px-4 pointer-coarse:min-h-11 max-lg:min-h-11",
+        xs: "h-8 gap-1 px-2.5 has-[>svg]:px-2 pointer-coarse:min-h-11 max-lg:min-h-11",
+        sm: "h-9 gap-1.5 px-4 has-[>svg]:px-3 pointer-coarse:min-h-11 max-lg:min-h-11",
         lg: "h-11 px-7 has-[>svg]:px-5",
-        icon: "size-10",
+        icon: "size-10 pointer-coarse:min-h-11 max-lg:min-h-11 pointer-coarse:min-w-11 max-lg:min-w-11",
 
-        "icon-xs": "size-8",
-        "icon-sm": "size-9",
+        // On phones it grows only to 36px (page headers); an invisible layer gives it a
+        // 48px tap area, the Android minimum and above iOS's 44pt.
+        "icon-xs":
+          "relative size-8 pointer-coarse:size-9 max-lg:size-9 pointer-coarse:after:absolute pointer-coarse:after:-inset-1.5 max-lg:after:absolute max-lg:after:-inset-1.5",
+        "icon-sm":
+          "size-9 pointer-coarse:min-h-11 max-lg:min-h-11 pointer-coarse:min-w-11 max-lg:min-w-11",
         "icon-lg": "size-11",
       },
     },

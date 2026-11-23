@@ -1,5 +1,6 @@
+import { getCategoryLabel } from "@/lib/taxonomy-labels";
 import type { DriftRow } from "@/lib/types";
-import { useAmountFormatting } from "@wealthfolio/ui";
+import { useAmountFormatting, useNumberFormatting } from "@wealthfolio/ui";
 import { useTranslation } from "react-i18next";
 import { Sector } from "recharts";
 import {
@@ -9,6 +10,7 @@ import {
 
 interface AllocationDonutProps {
   rows: DriftRow[];
+  taxonomyId: string;
   colorByCategory?: AllocationTargetColorMap;
   totalValue: number;
   currency: string;
@@ -22,6 +24,7 @@ const CORNER_RADIUS = 6;
 
 export function AllocationDonut({
   rows,
+  taxonomyId,
   colorByCategory,
   totalValue,
   currency,
@@ -31,6 +34,7 @@ export function AllocationDonut({
 }: AllocationDonutProps) {
   const formatting = useAmountFormatting();
   const { t } = useTranslation();
+  const numbers = useNumberFormatting();
   const thickness = Math.round(size * 0.11);
   const outerR = size / 2 - 8;
   const innerR = outerR - thickness;
@@ -102,13 +106,13 @@ export function AllocationDonut({
         {hoveredRow ? (
           <>
             <div className="text-muted-foreground text-2xs max-w-[75%] truncate tracking-wider uppercase">
-              {hoveredRow.categoryName}
+              {getCategoryLabel(t, taxonomyId, hoveredRow.categoryId, hoveredRow.categoryName)}
             </div>
             <div
               className="text-foreground mt-0.5 font-semibold tabular-nums"
               style={{ fontSize: Math.round(size * 0.1) }}
             >
-              {(hoveredRow.currentBps / 100).toFixed(1)}%
+              {numbers.formatPercent(hoveredRow.currentBps / 10000, { digits: 1 })}
             </div>
             <div
               className="text-muted-foreground mt-0.5 tabular-nums"

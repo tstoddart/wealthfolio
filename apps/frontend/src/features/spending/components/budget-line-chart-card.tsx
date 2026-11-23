@@ -29,6 +29,7 @@ interface BudgetToday {
 }
 
 const MIN_HISTORICAL_PACE_MONTHS = 2;
+const SPENDING_TAXONOMY = "spending_categories";
 
 function parseMonthKey(value: string | null | undefined): { year: number; month: number } | null {
   if (!value || !/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) return null;
@@ -122,12 +123,6 @@ export function BudgetLineChartCard({
       dayOfMonth,
       daysInMonth,
       daysRemaining: isCurrentMonth ? Math.max(0, daysInMonth - dayOfMonth) : 0,
-      monthLabel: dateFormatting
-        .formatCalendarDate(
-          { year, month, day: 1 },
-          { calendar: "gregory", month: "long", year: "numeric" },
-        )
-        .toUpperCase(),
       shortLabel: dateFormatting
         .formatCalendarDate(
           { year, month, day: 1 },
@@ -136,7 +131,7 @@ export function BudgetLineChartCard({
         .toUpperCase(),
     };
   }, [monthKey, isCurrentMonth, dateFormatting, today]);
-  const { dayOfMonth, daysInMonth, daysRemaining, monthLabel } = monthMeta;
+  const { dayOfMonth, daysInMonth, daysRemaining } = monthMeta;
 
   const cumulative = useMemo(() => {
     const byDay = new Map<number, number>();
@@ -159,7 +154,9 @@ export function BudgetLineChartCard({
       const topId = topCategoryId(row.categoryId, categoriesMeta);
       spentByTop.set(topId, (spentByTop.get(topId) ?? 0) + row.amount);
     }
+    // Rings measure spending against its budget; savings goals are not limits.
     return allocations
+      .filter((al) => al.taxonomyId === SPENDING_TAXONOMY)
       .map((al) => {
         const t = al.target || 0;
         if (t <= 0) return null;
@@ -246,7 +243,6 @@ export function BudgetLineChartCard({
     return (
       <DashboardCard
         title={t("spending:budgetChart.monthlyBudget")}
-        subtitle={monthMeta.shortLabel}
         action={headerAction}
         className="text-center"
       >
@@ -313,11 +309,7 @@ export function BudgetLineChartCard({
   const pillTopPx = Math.max(0, endY - 28);
 
   return (
-    <DashboardCard
-      title={t("spending:budgetChart.monthlyBudget")}
-      subtitle={monthLabel}
-      action={headerAction}
-    >
+    <DashboardCard title={t("spending:budgetChart.monthlyBudget")} action={headerAction}>
       <div className="flex items-center gap-2">
         <Icon className="h-4 w-4 shrink-0" style={{ color: a.accent }} />
         <span className="text-foreground text-sm font-semibold">{statusLabel}</span>
@@ -542,7 +534,7 @@ export function BudgetLineChartCard({
         ) : (
           <div
             data-no-swipe-drag
-            className="-mx-1 flex min-w-0 touch-pan-x gap-3 !overflow-x-auto overscroll-x-contain px-1 pb-1 [-webkit-overflow-scrolling:touch] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            className="scrollbar-hide -mx-1 flex min-w-0 touch-pan-x gap-3 !overflow-x-auto overscroll-x-contain px-1 pb-1 [-webkit-overflow-scrolling:touch]"
             style={{
               maskImage: "linear-gradient(to right, black calc(100% - 32px), transparent 100%)",
               WebkitMaskImage:

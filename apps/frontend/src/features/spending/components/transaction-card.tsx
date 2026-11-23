@@ -1,3 +1,4 @@
+import { getCategoryLabel } from "@/lib/taxonomy-labels";
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -14,6 +15,7 @@ import {
   type TransactionRowVM,
 } from "../lib/transactions-helpers";
 import { ActionPalette } from "@/components/action-palette";
+import { canConvertToTransfer } from "@/pages/activity/components/transfer-link-utils";
 
 import { CategoryIcon } from "./category-chips";
 import { QuickCategorizePopover } from "./quick-categorize-popover";
@@ -136,7 +138,8 @@ function TransactionCardImpl({
                 cannot separate the colours. */}
             {row.needsReview && <NeedsReviewMark label={t("spending:transactions.review")} />}
             <span className="text-foreground min-w-0 flex-1 truncate text-sm font-medium">
-              {a.notes ?? <span className="text-muted-foreground italic">—</span>}
+              {/* The form saves no notes as "", which must not leave a blank title. */}
+              {a.notes?.trim() ? a.notes : <span className="text-muted-foreground italic">—</span>}
             </span>
             <span
               className={cn(
@@ -183,7 +186,14 @@ function TransactionCardImpl({
                     type="button"
                     aria-label={
                       row.category
-                        ? t("spending:transactions.changeCategory", { name: row.category.name })
+                        ? t("spending:transactions.changeCategory", {
+                            name: getCategoryLabel(
+                              t,
+                              row.category.taxonomyId,
+                              row.category.id,
+                              row.category.name,
+                            ),
+                          })
                         : t("spending:transactions.assignCategory")
                     }
                     className={cn(INLINE, "max-w-[55%]")}
@@ -199,7 +209,14 @@ function TransactionCardImpl({
                         >
                           <CategoryIcon icon={row.category.icon} className="h-3.5 w-3.5" />
                         </span>
-                        <span className="truncate">{row.category.name}</span>
+                        <span className="truncate">
+                          {getCategoryLabel(
+                            t,
+                            row.category.taxonomyId,
+                            row.category.id,
+                            row.category.name,
+                          )}
+                        </span>
                       </>
                     ) : (
                       <span className="inline-flex min-w-0 items-center gap-0.5 italic">
@@ -310,6 +327,15 @@ function TransactionCardImpl({
                       {
                         icon: Icons.Link,
                         label: t("spending:transactions.linkTransfer"),
+                        onClick: () => onLinkTransfer(row),
+                      },
+                    ]
+                  : []),
+                ...(onLinkTransfer && canConvertToTransfer(a, account?.accountType)
+                  ? [
+                      {
+                        icon: Icons.ArrowLeftRight,
+                        label: t("spending:transactions.convertToTransfer"),
                         onClick: () => onLinkTransfer(row),
                       },
                     ]

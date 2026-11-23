@@ -1618,7 +1618,12 @@ fn priced_events(
     let range = resolved.range;
     let fx = resolved.fx();
     let convert = |amount: Decimal, currency: &Currency, date: NaiveDate| {
-        if amount.is_zero() || currency.as_str().eq_ignore_ascii_case(base.as_str()) {
+        // GBp matches GBP ignoring case but is pence: minor units go through
+        // the resolver, which scales them.
+        if amount.is_zero()
+            || (currency.as_str().eq_ignore_ascii_case(base.as_str())
+                && facts.policy.minor_unit_rule(currency.as_str()).is_none())
+        {
             return Some(amount);
         }
         fx.convert(amount, currency.as_str(), base.as_str(), date)
@@ -1794,6 +1799,24 @@ fn priced_events(
                 security: pair.security,
                 contribution_neutral: pair.contribution_neutral,
             })
+            // A conversion moves lots within its account as a transfer pair
+            // does: the lots it opens keep their purchase charges, counted
+            // where they were paid (rules R7.5, R3.5). It has no flow to net.
+            .chain(
+                facts
+                    .conversions
+                    .iter()
+                    .filter(|pair| !rejected.contains(&pair.out_activity))
+                    .map(|pair| PairEffect {
+                        group: pair.group_id.clone(),
+                        transfer_in: pair.in_activity.clone(),
+                        transfer_out: pair.out_activity.clone(),
+                        in_account: pair.account.clone(),
+                        out_account: pair.account.clone(),
+                        security: true,
+                        contribution_neutral: false,
+                    }),
+            )
             .collect(),
     };
     (effects, diagnostics)

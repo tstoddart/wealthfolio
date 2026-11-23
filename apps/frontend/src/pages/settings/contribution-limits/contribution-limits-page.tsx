@@ -2,7 +2,9 @@ import { getContributionLimit } from "@/adapters";
 import { useAccounts } from "@/hooks/use-accounts";
 import { QueryKeys } from "@/lib/query-keys";
 import type { ContributionLimit } from "@/lib/types";
+import { resolveDisplayTimezone } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
+import { today } from "@internationalized/date";
 import {
   Button,
   Icons,
@@ -14,12 +16,18 @@ import {
   EmptyTitle,
   EmptyDescription,
   EmptyContent,
+  useLocalizationSettings,
 } from "@wealthfolio/ui";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SettingsHeader } from "../settings-header";
 import { ContributionLimitEditModal } from "./components/contribution-limit-edit-modal";
 import { ContributionLimitItem } from "./components/contribution-limit-item";
+import { ContributionLimitProjectedItem } from "./components/contribution-limit-projected-item";
+import {
+  withProjectedRecurringLimits,
+  type ProjectedContributionLimit,
+} from "./contribution-limit-projection";
 import { useContributionLimitMutations } from "./use-contribution-limit-mutations";
 
 const SettingsContributionLimitPage = () => {
@@ -28,7 +36,8 @@ const SettingsContributionLimitPage = () => {
   const [selectedLimit, setSelectedLimit] = useState<ContributionLimit | null>(null);
   const [showPreviousYears, setShowPreviousYears] = useState(false);
 
-  const { accounts } = useAccounts();
+  const { accounts } = useAccounts({ filterActive: false });
+  const { timezone } = useLocalizationSettings();
 
   const { data: limits, isLoading } = useQuery<ContributionLimit[], Error>({
     queryKey: [QueryKeys.CONTRIBUTION_LIMITS],
@@ -47,6 +56,12 @@ const SettingsContributionLimitPage = () => {
     setVisibleModal(true);
   };
 
+  const handleAddProjectedLimit = (projected: ProjectedContributionLimit) => {
+    const { isProjected: _isProjected, sourceLimitId: _sourceLimitId, ...rest } = projected;
+    setSelectedLimit({ ...rest, id: "" });
+    setVisibleModal(true);
+  };
+
   const handleDeleteLimit = (limit: ContributionLimit) => {
     deleteContributionLimitMutation.mutate(limit.id);
   };
@@ -60,15 +75,29 @@ const SettingsContributionLimitPage = () => {
     );
   }
 
-  const currentYear = new Date().getFullYear();
-  const currentYearLimits = limits?.filter((limit) => limit.contributionYear === currentYear) || [];
-  const previousYearsLimits = limits?.filter((limit) => limit.contributionYear < currentYear) || [];
+  const displayTimezone = resolveDisplayTimezone(timezone);
+  const currentYear = today(displayTimezone).year;
+  const projectedLimits = withProjectedRecurringLimits(
+    limits ?? [],
+    currentYear,
+    undefined,
+    displayTimezone,
+  );
+  const currentYearLimits = projectedLimits.filter(
+    (limit) => limit.contributionYear === currentYear,
+  );
+  const futureYearsLimits = projectedLimits
+    .filter((limit) => limit.contributionYear > currentYear)
+    .sort((a, b) => a.contributionYear - b.contributionYear);
+  const previousYearsLimits = projectedLimits
+    .filter((limit) => limit.contributionYear < currentYear)
+    .sort((a, b) => b.contributionYear - a.contributionYear);
 
   return (
     <>
       <div className="space-y-6">
         <SettingsHeader
-          heading={t("settings:limits_full_title")}
+          heading={t("settings:nav.items.contribution_limits")}
           text={t("settings:limits_description")}
           actionsInline
         >
@@ -94,15 +123,24 @@ const SettingsContributionLimitPage = () => {
           </h2>
           {currentYearLimits.length ? (
             <div className="w-full space-y-4">
-              {currentYearLimits.map((limit: ContributionLimit) => (
-                <ContributionLimitItem
-                  key={limit.id}
-                  limit={limit}
-                  accounts={accounts || []}
-                  onEdit={handleEditLimit}
-                  onDelete={handleDeleteLimit}
-                />
-              ))}
+              {currentYearLimits.map((limit) =>
+                limit.isProjected ? (
+                  <ContributionLimitProjectedItem
+                    key={limit.id}
+                    limit={limit}
+                    accounts={accounts ?? []}
+                    onAdd={handleAddProjectedLimit}
+                  />
+                ) : (
+                  <ContributionLimitItem
+                    key={limit.id}
+                    limit={limit}
+                    accounts={accounts || []}
+                    onEdit={handleEditLimit}
+                    onDelete={handleDeleteLimit}
+                  />
+                ),
+              )}
             </div>
           ) : (
             <Empty>
@@ -122,6 +160,34 @@ const SettingsContributionLimitPage = () => {
             </Empty>
           )}
 
+          {futureYearsLimits.length > 0 && (
+            <div className="mt-8">
+              <h2 className="text-md text-muted-foreground mb-3 font-semibold">
+                {t("settings:limits_future_years")}
+              </h2>
+              <div className="w-full space-y-4">
+                {futureYearsLimits.map((limit) =>
+                  limit.isProjected ? (
+                    <ContributionLimitProjectedItem
+                      key={limit.id}
+                      limit={limit}
+                      accounts={accounts ?? []}
+                      onAdd={handleAddProjectedLimit}
+                    />
+                  ) : (
+                    <ContributionLimitItem
+                      key={limit.id}
+                      limit={limit}
+                      accounts={accounts || []}
+                      onEdit={handleEditLimit}
+                      onDelete={handleDeleteLimit}
+                    />
+                  ),
+                )}
+              </div>
+            </div>
+          )}
+
           {previousYearsLimits.length > 0 && (
             <div className="mt-8">
               <div className="flex items-center justify-center">
@@ -131,9 +197,7 @@ const SettingsContributionLimitPage = () => {
                   className="mx-4 shrink-0 rounded-full"
                   onClick={() => setShowPreviousYears(!showPreviousYears)}
                 >
-                  {showPreviousYears
-                    ? t("settings:limits_hide_previous")
-                    : t("settings:limits_show_previous")}{" "}
+                  {showPreviousYears ? t("common:hide") : t("settings:limits_show_previous")}{" "}
                   {t("settings:limits_previous_years")}
                 </Button>
                 <Separator className="flex-1" />

@@ -39,6 +39,7 @@ import { BulkHoldingsModal } from "./components/forms/bulk-holdings-modal";
 import { MobileActivityForm } from "./components/mobile-forms/mobile-activity-form";
 import { TransferMatchDialog } from "./components/transfer-match-dialog";
 import { useActivityActionDialogs } from "./hooks/use-activity-action-dialogs";
+import { isConversionActivity } from "./utils/conversion-counterpart";
 import { useActivitySearch, type ActivityStatusFilter } from "./hooks/use-activity-search";
 import {
   clearActivityUrlFilters,
@@ -84,9 +85,15 @@ function fromDateRange(range: DateRange | undefined): ActivityDateRangeFilter {
   };
 }
 
-const ActivityPage = () => {
+interface ActivityPageProps {
+  initialAction?: "transfer-holdings";
+}
+
+const ActivityPage = ({ initialAction }: ActivityPageProps) => {
   const { t } = useTranslation();
-  const [showBulkHoldingsForm, setShowBulkHoldingsForm] = useState(false);
+  const [showBulkHoldingsForm, setShowBulkHoldingsForm] = useState(
+    initialAction === "transfer-holdings",
+  );
   const [showAlternativeAssetModal, setShowAlternativeAssetModal] = useState(false);
   const [transferMatchDialog, setTransferMatchDialog] = useState<{
     open: boolean;
@@ -110,6 +117,12 @@ const ActivityPage = () => {
     duplicateActivity: handleDuplicate,
   } = useActivityActionDialogs();
   const navigate = useNavigate();
+  const closeBulkHoldings = () => {
+    setShowBulkHoldingsForm(false);
+    if (initialAction === "transfer-holdings") {
+      navigate("/activities", { replace: true });
+    }
+  };
   const showConnectAccountLink = useShowConnectAccountLink();
   const [searchParams, setSearchParams] = useSearchParams();
   const activityUrlFilterKey = searchParams.toString();
@@ -384,6 +397,12 @@ const ActivityPage = () => {
     return accounts.filter((a) => !excluded.has(a.id));
   }, [accounts, spendingAccountIds, isSpendingEnabled]);
 
+  // Each account's type, so a row menu can offer a card's own actions.
+  const accountTypeById = useMemo(
+    () => new Map(accounts.map((account) => [account.id, account.accountType])),
+    [accounts],
+  );
+
   const investmentAccountIds = useMemo(
     () => investmentAccounts.map((a) => a.id),
     [investmentAccounts],
@@ -406,6 +425,7 @@ const ActivityPage = () => {
         label: account.name,
         currency: account.currency,
         accountType: account.accountType,
+        group: account.group,
         restrictionLevel: getActivityRestrictionLevel(account),
       }));
   }, [accounts, investmentAccounts, isSpendingEnabled, selectedActivity?.accountId]);
@@ -423,6 +443,7 @@ const ActivityPage = () => {
           label: account.name,
           currency: account.currency,
           accountType: account.accountType,
+          group: account.group,
           restrictionLevel: getActivityRestrictionLevel(account),
         })),
     [accounts],
@@ -602,6 +623,16 @@ const ActivityPage = () => {
                 },
               ]
             : []),
+        ],
+      },
+      {
+        items: [
+          {
+            icon: Icons.ArrowLeftRight,
+            label: t("activity:transfer_review.title"),
+            testId: "match-transfers-action",
+            onClick: () => navigate("/activities/transfers"),
+          },
         ],
       },
     ],
@@ -792,6 +823,7 @@ const ActivityPage = () => {
           onDuplicate={handleDuplicate}
           onLinkTransfer={handleLinkTransfer}
           onUnlinkTransfer={handleUnlinkTransfer}
+          accountTypeById={accountTypeById}
           filtersActive={investmentsFiltersActive}
           onAdd={() => handleEdit(undefined)}
           showConnectAccountLink={showConnectAccountLink}
@@ -830,6 +862,7 @@ const ActivityPage = () => {
           handleDelete={handleDelete}
           onLinkTransfer={handleLinkTransfer}
           onUnlinkTransfer={handleUnlinkTransfer}
+          accountTypeById={accountTypeById}
           filtersActive={investmentsFiltersActive}
           onAdd={() => handleEdit(undefined)}
           showConnectAccountLink={showConnectAccountLink}
@@ -876,15 +909,14 @@ const ActivityPage = () => {
         isOpen={showDeleteAlert}
         isDeleting={isDeleting}
         linkedTransfer={!!selectedActivity?.sourceGroupId}
+        conversion={isConversionActivity(selectedActivity)}
         onConfirm={handleDeleteConfirm}
         onCancel={handleDeleteCancel}
       />
       <BulkHoldingsModal
         open={showBulkHoldingsForm}
-        onClose={() => setShowBulkHoldingsForm(false)}
-        onSuccess={() => {
-          setShowBulkHoldingsForm(false);
-        }}
+        onClose={closeBulkHoldings}
+        onSuccess={closeBulkHoldings}
       />
       <AlternativeAssetQuickAddModal
         open={showAlternativeAssetModal}

@@ -13,31 +13,20 @@ import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
-// Explanatory texts for info popovers
-export const TIME_WEIGHTED_RETURN_INFO =
-  "Time-weighted return (TWR) measures investment performance after removing the effect of deposits and withdrawals. Periods under one year are shown as selected-period returns; periods of one year or longer are shown annualized when available.";
-export const MONEY_WEIGHTED_RETURN_INFO =
-  "Money-weighted return (MWR) measures performance using the size and timing of external cash flows. It is calculated with IRR/XIRR; for periods of one year or longer, annualized XIRR is the standard display.";
-export const IRR_RETURN_INFO =
-  "Internal rate of return (IRR) measures money-weighted performance using the size and timing of external cash flows. For periods of one year or longer, annualized XIRR is the standard display.";
-export const SIMPLE_RETURN_INFO =
-  "Simple return compares total gain or loss with net contributions. It is cumulative and not time weighted.";
-export const VALUE_RETURN_INFO =
-  "Value return measures the change in account value over the selected period when transaction-level cash flows are not available.";
-export const PRICE_RETURN_INFO =
-  "Price return measures the selected symbol's price change over the selected period.";
-export const VOLATILITY_INFO =
-  "Volatility measures the dispersion of returns for a given investment. Higher volatility means the investment can change dramatically over a short period. It is annualized from calendar-daily returns.";
-export const MAX_DRAWDOWN_INFO =
-  "Maximum Drawdown represents the largest percentage decline from a peak to a subsequent trough in portfolio value during the specified period. It indicates downside risk.";
-export const ANNUALIZED_RETURN_INFO =
-  "Annualized return is the average yearly compounded rate for the selected period. It is not the cumulative total gain or loss.";
+// Stable translation keys for metric explanations; resolve in the rendering locale.
+export const TIME_WEIGHTED_RETURN_INFO_KEY = "performance:metric_info.time_weighted_return";
+export const MONEY_WEIGHTED_RETURN_INFO_KEY = "performance:metric_info.money_weighted_return";
+export const IRR_RETURN_INFO_KEY = "performance:metric_info.irr";
+export const SIMPLE_RETURN_INFO_KEY = "performance:metric_info.simple_return";
+export const VALUE_RETURN_INFO_KEY = "performance:metric_info.value_return";
+export const PRICE_RETURN_INFO_KEY = "performance:metric_info.price_return";
+export const VOLATILITY_INFO_KEY = "performance:metric_info.volatility";
+export const MAX_DRAWDOWN_INFO_KEY = "performance:metric_info.max_drawdown";
+export const ANNUALIZED_RETURN_INFO_KEY = "performance:metric_info.annualized_return";
 
 // Holdings mode specific info texts.
-export const HOLDINGS_MODE_VOLATILITY_INFO =
-  "Volatility of account value changes. Based on daily valuations without adjusting for deposits or withdrawals. Reflects how much the market value fluctuates.";
-export const HOLDINGS_MODE_MAX_DRAWDOWN_INFO =
-  "Largest peak-to-trough decline in account value. Based on daily valuations without adjusting for deposits or withdrawals.";
+export const HOLDINGS_MODE_VOLATILITY_INFO_KEY = "performance:metric_info.holdings_volatility";
+export const HOLDINGS_MODE_MAX_DRAWDOWN_INFO_KEY = "performance:metric_info.holdings_max_drawdown";
 
 export interface MetricDisplayProps {
   label: string;
@@ -76,7 +65,9 @@ export const MetricDisplay: React.FC<MetricDisplayProps> = ({
 
   const displayValue =
     value === undefined ? (
-      <span className={cn("text-muted-foreground text-base font-medium", valueClassName)}>N/A</span>
+      <span className={cn("text-muted-foreground text-base font-medium", valueClassName)}>
+        {t("performance:not_available")}
+      </span>
     ) : isPercentage && tone === "neutral" ? (
       <span className={cn("text-foreground text-base font-medium", valueClassName)}>
         {formatting.formatPercent(value)}
@@ -206,17 +197,6 @@ export const MetricDisplay: React.FC<MetricDisplayProps> = ({
   );
 };
 
-// Simple component for displaying only the label with info popover
-// This can be used by performance-page.tsx
-export interface MetricLabelWithInfoProps {
-  label: string;
-  infoText: string;
-  warningText?: string | string[];
-  /** Substrings (e.g. account names) to render in bold within each warning. */
-  boldTerms?: string[];
-  className?: string;
-}
-
 /** Render a warning string, bolding any occurrences of the provided terms. */
 function renderWarningText(text: string, boldTerms: string[]): React.ReactNode {
   const terms = boldTerms.filter(Boolean).sort((a, b) => b.length - a.length);
@@ -276,60 +256,6 @@ export const MetricInfoPopoverBody: React.FC<{
           </ul>
         </div>
       )}
-    </div>
-  );
-};
-
-export const MetricLabelWithInfo: React.FC<MetricLabelWithInfoProps> = ({
-  label,
-  infoText,
-  warningText,
-  boldTerms = [],
-  className,
-}) => {
-  const { t } = useTranslation();
-  const warningItems = metricWarningItems(warningText);
-  const hasWarnings = warningItems.length > 0;
-
-  return (
-    <div className={cn("text-muted-foreground flex items-center text-xs font-light", className)}>
-      <span>{label}</span>
-      <Popover>
-        <PopoverTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "ms-1 h-4 w-4 rounded-full p-0",
-                hasWarnings && "text-warning hover:text-warning",
-              )}
-            />
-          }
-        >
-          {hasWarnings ? (
-            <Icons.AlertTriangle className="h-3 w-3" />
-          ) : (
-            <Icons.Info className="h-3 w-3" />
-          )}
-          <span className="sr-only">
-            {hasWarnings
-              ? t("common:component.calculation_note_for", { label })
-              : t("common:component.more_info_about", { label })}
-          </span>
-        </PopoverTrigger>
-        <PopoverContent
-          className="w-[40rem] max-w-[calc(100vw-2rem)] p-0 text-sm"
-          side="top"
-          align="center"
-        >
-          <MetricInfoPopoverBody
-            infoText={infoText}
-            warningItems={warningItems}
-            boldTerms={boldTerms}
-          />
-        </PopoverContent>
-      </Popover>
     </div>
   );
 };

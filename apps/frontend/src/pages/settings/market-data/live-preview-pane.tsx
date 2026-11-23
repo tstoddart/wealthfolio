@@ -25,7 +25,9 @@ import {
   type TemplatePlaceholderValues,
 } from "./template-placeholders";
 import type { MappingField, SourceRuntime } from "./use-source-runtime";
+import { BackendError, backendErrorText } from "@/lib/backend-error";
 import { Alert, AlertDescription } from "@wealthfolio/ui/components/ui/alert";
+import { copyText } from "@wealthfolio/ui/lib/clipboard";
 
 interface LivePreviewPaneProps {
   form: UseFormReturn<FormValues>;
@@ -53,7 +55,7 @@ const MAPPING_META: {
   },
   {
     field: "currencyPath",
-    labelKey: "settings:market_data_page.field_currency",
+    labelKey: "common:currency",
     color: "bg-amber-500",
     required: false,
   },
@@ -167,7 +169,7 @@ function StatusPill({
     return (
       <span className="text-destructive-subtle-foreground bg-destructive-subtle inline-flex shrink-0 items-center gap-1.5 rounded-full border border-transparent px-3 py-1 text-xs whitespace-nowrap">
         <span className="bg-destructive h-1.5 w-1.5 rounded-full" />
-        {t("settings:market_data_page.status_error")}
+        {t("common:error")}
       </span>
     );
   }
@@ -516,7 +518,7 @@ function CopyButton({ text, disabled }: { text: string; disabled?: boolean }) {
   const handleCopy = async () => {
     if (disabled || !text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -658,6 +660,10 @@ export function LivePreviewPane({ form, prefix, runtime }: LivePreviewPaneProps)
   const formatting = useNumberFormatting();
   const { t } = useTranslation();
   const [moreFieldsOpen, setMoreFieldsOpen] = useState(false);
+  const fetchError =
+    runtime.fetchError instanceof BackendError
+      ? backendErrorText(runtime.fetchError, t)
+      : runtime.fetchError;
   const format = form.watch(`${prefix}.format`) ?? "json";
   const pricePath = form.watch(`${prefix}.pricePath`);
   const datePath = form.watch(`${prefix}.datePath`);
@@ -713,11 +719,7 @@ export function LivePreviewPane({ form, prefix, runtime }: LivePreviewPaneProps)
             {t("settings:market_data_page.live_reflects_instantly")}
           </p>
         </div>
-        <StatusPill
-          isFetching={runtime.isFetching}
-          status={runtime.status}
-          error={runtime.fetchError}
-        />
+        <StatusPill isFetching={runtime.isFetching} status={runtime.status} error={fetchError} />
       </div>
 
       {/* Request URL preview */}
@@ -848,12 +850,12 @@ export function LivePreviewPane({ form, prefix, runtime }: LivePreviewPaneProps)
           )}
         </div>
 
-        {runtime.fetchError && !runtime.isFetching ? (
+        {fetchError && !runtime.isFetching ? (
           <Alert variant="destructive" className="p-3">
             <Icons.XCircle />
             <AlertDescription>
-              {runtime.fetchError}
-              {/403|forbidden|denied/i.test(runtime.fetchError) && (
+              {fetchError}
+              {/403|forbidden|denied/i.test(fetchError) && (
                 <p className="mt-1 text-xs">
                   {t("settings:market_data_page.fetch_error_headers_hint")}
                 </p>
@@ -988,7 +990,9 @@ export function LivePreviewPane({ form, prefix, runtime }: LivePreviewPaneProps)
             <Alert variant="destructive" className="p-3 text-xs">
               <Icons.XCircle />
               <AlertDescription>
-                {runtime.testResult.error ?? t("settings:market_data_page.extraction_failed")}
+                {runtime.testResult.errorCode
+                  ? backendErrorText(runtime.testResult, t)
+                  : (runtime.testResult.error ?? t("settings:market_data_page.extraction_failed"))}
               </AlertDescription>
             </Alert>
           )}

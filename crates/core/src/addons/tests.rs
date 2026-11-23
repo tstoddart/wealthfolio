@@ -408,6 +408,40 @@ fn test_detect_addon_permissions_assets_and_market_data_sdk_categories() {
 }
 
 #[test]
+fn test_detect_addon_permissions_alternative_assets() {
+    let addon_files = vec![AddonFile {
+        name: "addon.js".to_string(),
+        content: r#"
+            export default async function enable(ctx) {
+                const holdings = await ctx.api.alternativeAssets.getAll();
+            }
+        "#
+        .to_string(),
+        is_main: true,
+    }];
+
+    let detected_permissions = detect_addon_permissions(&addon_files);
+    let alternative_assets_permission = detected_permissions
+        .iter()
+        .find(|permission| permission.category == "alternative-assets")
+        .expect("alternative-assets permissions should be detected");
+
+    assert!(
+        alternative_assets_permission
+            .functions
+            .iter()
+            .any(|function| function.name == "getAll"),
+        "getAll should be detected under alternative-assets"
+    );
+    assert!(
+        detected_permissions
+            .iter()
+            .all(|permission| permission.category != "accounts"),
+        "alternativeAssets.getAll should not be detected under accounts"
+    );
+}
+
+#[test]
 fn test_detect_addon_permissions_historical_exchange_rates() {
     let addon_files = vec![AddonFile {
         name: "addon.js".to_string(),
@@ -533,6 +567,43 @@ fn test_detect_addon_permissions_spending() {
         .functions
         .iter()
         .any(|function| function.name == "searchCashActivities"));
+}
+
+#[test]
+fn test_detect_addon_permissions_allocation_targets() {
+    let addon_files = vec![AddonFile {
+        name: "addon.js".to_string(),
+        content: r#"
+            export default async function enable(ctx) {
+                const targets = await ctx.api.allocationTargets.getAll();
+                await ctx.api.allocationTargets.getDrift(targets[0].id);
+            }
+        "#
+        .to_string(),
+        is_main: true,
+    }];
+
+    let detected_permissions = detect_addon_permissions(&addon_files);
+    let allocation_permission = detected_permissions
+        .iter()
+        .find(|permission| permission.category == "allocation-targets")
+        .expect("allocation-targets permissions should be detected");
+    let detected_functions: std::collections::HashSet<&str> = allocation_permission
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
+
+    assert_eq!(
+        detected_functions,
+        std::collections::HashSet::from(["getAll", "getDrift"])
+    );
+    assert!(
+        !detected_permissions
+            .iter()
+            .any(|permission| permission.category == "alternative-assets"),
+        "allocationTargets.getAll must not be read as alternativeAssets.getAll"
+    );
 }
 
 #[test]

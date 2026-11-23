@@ -1,3 +1,4 @@
+import { getCategoryPathLabel } from "@/lib/taxonomy-labels";
 import { updateToolResult } from "@/adapters";
 import { QuickCategorizePopover } from "@/features/spending/components/quick-categorize-popover";
 import { useBulkAssignCategories } from "@/features/spending/hooks/use-cash-activities";
@@ -20,6 +21,7 @@ import {
   useAmountFormatting,
   useDateFormatting,
   Spinner,
+  useNumberFormatting,
 } from "@wealthfolio/ui";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { memo, useEffect, useMemo, useState } from "react";
@@ -61,10 +63,6 @@ function confidenceVariant(confidence: number) {
   return "outline";
 }
 
-function confidenceLabel(confidence: number): string {
-  return `${Math.round(confidence * 100)}%`;
-}
-
 function ProposalsLoadingState() {
   const { t } = useTranslation();
   return (
@@ -98,6 +96,7 @@ export function CategorizationProposalsContentImpl({
   const dateFormatting = useDateFormatting();
 
   const { t } = useTranslation();
+  const numbers = useNumberFormatting();
   const { settings } = useSettingsContext();
   const baseCurrency = settings?.baseCurrency ?? "USD";
   const { isBalanceHidden } = useBalancePrivacy();
@@ -376,7 +375,17 @@ export function CategorizationProposalsContentImpl({
                       className="h-2 w-2 rounded-full"
                       style={{ backgroundColor: row.categoryColor }}
                     />
-                    <span className="max-w-45 truncate">{row.categoryPath}</span>
+                    <span className="max-w-45 truncate">
+                      {getCategoryPathLabel(
+                        t,
+                        row.taxonomyId,
+                        row.categoryId,
+                        row.categoryPath,
+                        result.taxonomies?.find(
+                          (taxonomy) => taxonomy.taxonomyId === row.taxonomyId,
+                        )?.categories ?? [],
+                      )}
+                    </span>
                   </button>
                 }
                 selectedCategoryId={row.categoryId}
@@ -394,7 +403,7 @@ export function CategorizationProposalsContentImpl({
                 )}
                 title={row.explanation}
               >
-                {confidenceLabel(row.confidence)}
+                {numbers.formatPercent(row.confidence, { digits: 0 })}
               </Badge>
             </div>
           ))}

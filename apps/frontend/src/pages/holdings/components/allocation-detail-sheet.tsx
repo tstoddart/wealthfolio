@@ -1,3 +1,4 @@
+import { getCategoryLabel, getTaxonomyLabel, localizeAllocation } from "@/lib/taxonomy-labels";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import {
   Sheet,
@@ -7,9 +8,9 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@wealthfolio/ui/components/ui/sheet";
-import { AmountDisplay, chartSliceColor, Skeleton } from "@wealthfolio/ui";
+import { AmountDisplay, chartSliceColor, Skeleton, useNumberFormatting } from "@wealthfolio/ui";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -51,6 +52,7 @@ export function AllocationDetailSheet({
 }: AllocationDetailSheetProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const numberFormatting = useNumberFormatting();
   const titleRef = useRef<HTMLHeadingElement>(null);
   const { isBalanceHidden } = useBalancePrivacy();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
@@ -194,6 +196,14 @@ export function AllocationDetailSheet({
 
   const categories = allocation?.categories ?? [];
   const hasData = categories.length > 0;
+  const displayAllocation = useMemo(
+    () => (allocation ? localizeAllocation(t, allocation) : undefined),
+    [allocation, t],
+  );
+  const selectedLabel =
+    displayAllocation?.categories
+      .flatMap((row) => [row, ...(row.children ?? [])])
+      .find((row) => row.categoryId === selectedCategoryId)?.categoryName ?? selectedCategoryName;
   // The list uses the chart colours by position, as the bar above it and the Insights
   // donut do; a child takes its parent's colour.
   const selectedIndex = categories.findIndex(
@@ -210,13 +220,12 @@ export function AllocationDetailSheet({
       <SheetContent
         className="flex w-full flex-col overflow-hidden sm:max-w-xl"
         initialFocus={titleRef}
-        style={{
-          paddingTop: "max(env(safe-area-inset-top, 0px), 1.5rem)",
-        }}
       >
         <SheetHeader className="mt-4">
           <SheetTitle ref={titleRef} tabIndex={-1} className="outline-none">
-            {allocation?.taxonomyName ?? t("holdings:allocation")}
+            {allocation
+              ? getTaxonomyLabel(t, allocation.taxonomyId, allocation.taxonomyName)
+              : t("holdings:allocation")}
           </SheetTitle>
         </SheetHeader>
 
@@ -269,7 +278,12 @@ export function AllocationDetailSheet({
                         style={{ backgroundColor: chartSliceColor(idx) }}
                       />
                       <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                        {category.categoryName}
+                        {getCategoryLabel(
+                          t,
+                          allocation?.taxonomyId ?? "",
+                          category.categoryId,
+                          category.categoryName,
+                        )}
                       </span>
 
                       {/* Value + percentage */}
@@ -280,14 +294,14 @@ export function AllocationDetailSheet({
                         className="shrink-0 text-sm"
                       />
                       <span className="text-muted-foreground w-12 shrink-0 text-end text-xs tabular-nums">
-                        {category.percentage.toFixed(1)}%
+                        {numberFormatting.formatPercent(category.percentage / 100, { digits: 1 })}
                       </span>
                     </div>
 
                     {/* Children rows */}
                     {hasChildren && (
                       <div
-                        className={`grid transition-[grid-template-rows] duration-200 ease-in-out ${
+                        className={`grid transition-[grid-template-rows] duration-200 ease-in-out motion-reduce:transition-none ${
                           isExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
                         }`}
                       >
@@ -314,7 +328,21 @@ export function AllocationDetailSheet({
                                     style={{ backgroundColor: chartSliceColor(idx) }}
                                   />
                                   <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
-                                    {child.categoryName}
+                                    {child.isResidual
+                                      ? t("common:allocation_other_in_category", {
+                                          category: getCategoryLabel(
+                                            t,
+                                            allocation?.taxonomyId ?? "",
+                                            category.categoryId,
+                                            category.categoryName,
+                                          ),
+                                        })
+                                      : getCategoryLabel(
+                                          t,
+                                          allocation?.taxonomyId ?? "",
+                                          child.categoryId,
+                                          child.categoryName,
+                                        )}
                                   </span>
                                   <AmountDisplay
                                     value={child.value}
@@ -323,7 +351,9 @@ export function AllocationDetailSheet({
                                     className="text-muted-foreground shrink-0 text-xs"
                                   />
                                   <span className="text-muted-foreground w-12 shrink-0 text-end text-xs tabular-nums">
-                                    {child.percentage.toFixed(1)}%
+                                    {numberFormatting.formatPercent(child.percentage / 100, {
+                                      digits: 1,
+                                    })}
                                   </span>
                                 </div>
                               );
@@ -345,7 +375,7 @@ export function AllocationDetailSheet({
                 <h3 className="text-sm font-medium">
                   <Trans
                     i18nKey="holdings:holdings_in_category"
-                    values={{ category: selectedCategoryName }}
+                    values={{ category: selectedLabel }}
                     components={{
                       1: <span style={{ color: selectedColor }} />,
                     }}
@@ -444,7 +474,9 @@ export function AllocationDetailSheet({
                               className="text-sm font-medium"
                             />
                             <p className="text-muted-foreground text-xs">
-                              {holding.weightInCategory.toFixed(1)}%
+                              {numberFormatting.formatPercent(holding.weightInCategory / 100, {
+                                digits: 1,
+                              })}
                             </p>
                           </div>
                         </div>

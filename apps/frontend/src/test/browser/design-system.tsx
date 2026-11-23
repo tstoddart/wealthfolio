@@ -1,8 +1,10 @@
+import { TouchControlsFixture } from "./touch-controls";
 import { type ReactNode, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { Toaster, toast } from "sonner";
 import "sonner/dist/styles.css";
+import { SpendingDeltaLine } from "@/features/spending/components/spending-delta-line";
 import { AppDirectionProvider } from "@/i18n/direction";
 import i18next from "@/i18n/i18n";
 import {
@@ -98,11 +100,14 @@ import {
   Icons,
 } from "@wealthfolio/ui";
 import "@/globals.css";
+import { OverlaySafeAreaFixture } from "./overlay-safe-area";
+import { PerformanceChartFixture } from "./performance-chart";
 
 // Synthetic fixture for the UI-primitive guardrails: every primitive in
 // @wealthfolio/ui in its key states, each overlay opened from a named trigger.
 // No financial data and no backend. `?dir=rtl` mirrors it (see i18n/direction);
-// `?theme=<id>` shows a theme other than Classic.
+// `?theme=<id>` shows a theme other than Classic; `?gainColors=<option>` sets the gain
+// and loss colours.
 
 const params = new URLSearchParams(location.search);
 const mode = params.get("mode") === "dark" ? "dark" : "light";
@@ -110,6 +115,8 @@ document.documentElement.classList.add(mode);
 document.documentElement.style.colorScheme = mode;
 const theme = params.get("theme");
 if (theme) document.documentElement.dataset.theme = theme;
+const gainColors = params.get("gainColors");
+if (gainColors) document.documentElement.dataset.gainColors = gainColors;
 
 const currencies = ["USD", "EUR", "GBP", "CHF", "JPY", "CAD"];
 // An inline image, so the avatar loads without a network request.
@@ -417,6 +424,27 @@ function Fixture() {
           </div>
         </Section>
 
+        <Section title="Change lines">
+          {/* Spending's line under its hero number, up and down: it keeps success and
+              destructive in every Gain and loss colours option (colors.spec.ts). */}
+          <div className="grid gap-2">
+            {(
+              [
+                ["up", 320.5, 0.12],
+                ["down", -210.25, -0.08],
+              ] as const
+            ).map(([direction, delta, ratio]) => (
+              <div
+                key={direction}
+                data-testid={`spending-change-${direction}`}
+                className="text-md flex flex-wrap items-center gap-x-3"
+              >
+                <SpendingDeltaLine delta={delta} currency="USD" deltaPct={ratio} />
+              </div>
+            ))}
+          </div>
+        </Section>
+
         <Section title="Overlays">
           <div className="flex flex-wrap items-center gap-3">
             <Dialog>
@@ -557,7 +585,15 @@ function Fixture() {
 void i18next.changeLanguage("en").then(() => {
   createRoot(document.getElementById("root")!).render(
     <AppDirectionProvider>
-      <Fixture />
+      {params.has("touchControls") ? (
+        <TouchControlsFixture />
+      ) : params.has("safeArea") ? (
+        <OverlaySafeAreaFixture />
+      ) : params.has("chart") ? (
+        <PerformanceChartFixture />
+      ) : (
+        <Fixture />
+      )}
     </AppDirectionProvider>,
   );
 });

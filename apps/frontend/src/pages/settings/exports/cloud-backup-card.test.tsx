@@ -4,7 +4,9 @@ import { Activity } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { CloudBackupOperation } from "@/adapters";
+import commonCopy from "@/i18n/locales/en/common.json";
 import copy from "@/i18n/locales/en/settings.json";
+import { backendError } from "@/lib/backend-error";
 import { CloudBackupCard, CloudBackupSummary } from "./cloud-backup-card";
 const mocks = vi.hoisted(() => ({
   action: vi.fn<(op: CloudBackupOperation) => Promise<unknown>>(),
@@ -183,7 +185,7 @@ it("cloud delete keeps failure feedback inside its confirmation and clears it on
   fireEvent.click(await screen.findByRole("menuitem", { name: copy.cloud_backup_delete_all }));
   expect(mocks.action.mock.calls.some(([op]) => op.action === "delete")).toBe(false);
   await screen.findByText(copy.cloud_backup_delete_confirm);
-  fireEvent.click(screen.getAllByRole("button", { name: copy.cloud_backup_delete }).at(-1)!);
+  fireEvent.click(screen.getAllByRole("button", { name: commonCopy.delete }).at(-1)!);
   expect(await screen.findByRole("alert")).toHaveTextContent(copy.cloud_backup_failed);
   expect(screen.getAllByText(copy.cloud_backup_failed)).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -210,7 +212,7 @@ it("deletes cloud history only after confirmation without requiring another sign
   fireEvent.click(await screen.findByRole("button", { name: copy.cloud_backup_options }));
   fireEvent.click(await screen.findByRole("menuitem", { name: copy.cloud_backup_delete_all }));
   expect(mocks.action.mock.calls.some(([op]) => op.action === "delete")).toBe(false);
-  fireEvent.click(screen.getByRole("button", { name: copy.cloud_backup_delete }));
+  fireEvent.click(screen.getByRole("button", { name: commonCopy.delete }));
   await waitFor(() =>
     expect(mocks.action).toHaveBeenCalledWith({ action: "delete", backupId: null }),
   );
@@ -246,7 +248,7 @@ it("mobile offers recovery-package downloads while replacement remains gated", a
     history: [{ backupId: "mobile-point", publishedAt: "2026-10-01T00:00:00Z", sizeBytes: 123 }],
   });
   mount();
-  fireEvent.click(await screen.findByRole("button", { name: copy.cloud_backup_download }));
+  fireEvent.click(await screen.findByRole("button", { name: commonCopy.download }));
   await waitFor(() => expect(mocks.download).toHaveBeenCalledWith("mobile-point"));
   expect(screen.queryByRole("button", { name: copy.cloud_backup_restore })).not.toBeInTheDocument();
   expect(
@@ -684,8 +686,8 @@ it("puts every row action in the titled action palette on phone widths", async (
   expect(within(list).queryByRole("button", { name: copy.cloud_backup_restore })).toBeNull();
   fireEvent.click(within(list).getByRole("button", { name: /^Options for backup from/ }));
   expect(await screen.findByRole("heading", { name: /2026/ })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: copy.cloud_backup_download })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: copy.cloud_backup_delete })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: commonCopy.download })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: commonCopy.delete })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: copy.cloud_backup_restore }));
   await waitFor(() => expect(mocks.preview).toHaveBeenCalledWith("point"));
 });
@@ -764,17 +766,44 @@ it("says so when no backup was started", async () => {
     expect(mocks.toast).toHaveBeenCalledWith({ title: copy.cloud_backup_not_started }),
   );
 });
-it("explains the daily manual limit instead of a generic failure", async () => {
+it.each(["legacy", "structured"])(
+  "explains the daily manual limit instead of a generic failure (%s)",
+  async (format) => {
+    mocks.action.mockImplementation((op) =>
+      Promise.resolve(op.action === "runtimeStatus" ? { state: "idle", retryAt: null } : running),
+    );
+    const failure = "API error (409): BACKUP_MANUAL_LIMIT: FAKE-KEY-2531 /private/portfolio.db";
+    mocks.capture.mockRejectedValue(
+      format === "legacy" ? new Error(failure) : backendError(failure),
+    );
+    mount();
+    await openBackupMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: copy.backup_now }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(copy.cloud_backup_manual_limit);
+    expect(document.body.textContent).not.toContain("FAKE-KEY");
+    expect(document.body.textContent).not.toContain("/private");
+  },
+);
+
+it("keeps the sign-in recovery link for a normalized backup error", async () => {
   mocks.action.mockImplementation((op) =>
     Promise.resolve(op.action === "runtimeStatus" ? { state: "idle", retryAt: null } : running),
   );
   mocks.capture.mockRejectedValue(
-    new Error("API error (409): BACKUP_MANUAL_LIMIT: Manual backup limit reached"),
+    backendError({
+      errorCode: "BACKUP_REAUTHENTICATION_REQUIRED",
+      message: "FAKE-KEY-2531 /private/portfolio.db",
+    }),
   );
   mount();
   await openBackupMenu();
   fireEvent.click(await screen.findByRole("menuitem", { name: copy.backup_now }));
-  expect(await screen.findByRole("alert")).toHaveTextContent(copy.cloud_backup_manual_limit);
+  expect(await screen.findByRole("alert")).toHaveTextContent(copy.cloud_backup_reauth);
+  expect(screen.getByRole("link", { name: copy.cloud_backup_sign_in })).toHaveAttribute(
+    "href",
+    "/settings/connect",
+  );
+  expect(document.body.textContent).not.toContain("FAKE-KEY");
 });
 it.each([
   {

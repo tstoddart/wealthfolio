@@ -1,15 +1,8 @@
+import { getCategoryLabel } from "@/lib/taxonomy-labels";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
   Button,
   Icons,
   Tooltip,
@@ -58,7 +51,6 @@ export function CategoryItem({
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const hasChildren = children && children.length > 0;
   const activityCount = activityCounts?.[category.id] ?? 0;
   const isExcluded = parentExcluded || (excludedIds?.has(category.id) ?? false);
@@ -88,7 +80,7 @@ export function CategoryItem({
           icon: Icons.Trash,
           label: t("common:delete"),
           variant: "destructive" as const,
-          onClick: () => setConfirmDeleteOpen(true),
+          onClick: () => onDelete(category),
         },
       ],
     },
@@ -106,7 +98,7 @@ export function CategoryItem({
               size="sm"
               className="h-6 w-6 shrink-0 p-0"
               onClick={() => setIsExpanded(!isExpanded)}
-              aria-label={category.name}
+              aria-label={getCategoryLabel(t, category.taxonomyId, category.id, category.name)}
               aria-expanded={isExpanded}
             >
               {isExpanded ? (
@@ -124,7 +116,7 @@ export function CategoryItem({
             iconClassName={isSubcategory ? "h-3 w-3" : undefined}
           />
           <span className={`min-w-0 truncate ${isSubcategory ? "text-sm" : "text-sm font-medium"}`}>
-            {category.name}
+            {getCategoryLabel(t, category.taxonomyId, category.id, category.name)}
           </span>
           {activityCount > 0 && (
             <TooltipProvider>
@@ -192,7 +184,7 @@ export function CategoryItem({
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setConfirmDeleteOpen(true)}
+            onClick={() => onDelete(category)}
             title={t("spending:category.deleteCategoryTitle")}
           >
             <Icons.Trash className="h-4 w-4" />
@@ -203,7 +195,7 @@ export function CategoryItem({
         <ActionPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
-          title={category.name}
+          title={getCategoryLabel(t, category.taxonomyId, category.id, category.name)}
           groups={paletteGroups}
           align="end"
           trigger={
@@ -217,29 +209,6 @@ export function CategoryItem({
             </Button>
           }
         />
-
-        <AlertDialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t("spending:category.deleteTitle")}</AlertDialogTitle>
-              <AlertDialogDescription>
-                {t("spending:category.deleteConfirm", { name: category.name })}
-                {hasChildren && (
-                  <span className="text-destructive mt-2 block font-medium">
-                    {t("spending:category.deleteSubcategoriesWarning")}
-                  </span>
-                )}{" "}
-                {t("spending:category.deleteUndoNote")}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t("common:cancel")}</AlertDialogCancel>
-              <AlertDialogAction onClick={() => onDelete(category)} variant="destructive">
-                {t("common:delete")}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
       </div>
       {hasChildren && isExpanded && (
         <div className="space-y-0">
@@ -256,7 +225,7 @@ export function CategoryItem({
               activityCounts={activityCounts}
               excludedIds={excludedIds}
               parentExcluded={isExcluded}
-              parentName={category.name}
+              parentName={getCategoryLabel(t, category.taxonomyId, category.id, category.name)}
             />
           ))}
         </div>

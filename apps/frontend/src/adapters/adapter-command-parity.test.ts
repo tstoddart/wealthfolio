@@ -215,6 +215,22 @@ describe("calculated worksheet transport", () => {
 });
 
 describe("adapter command parity", () => {
+  it("routes detailed rule reruns without changing the numeric legacy response", async () => {
+    const summary = { matched: 1, changed: 0, incompatible: 1 };
+    const mock = stubFetch(summary);
+    expect(
+      await invoke("rerun_categorization_rules_detailed", { onlyUncategorized: false }),
+    ).toEqual(summary);
+    expect(lastCall(mock)).toEqual({
+      url: "/api/v1/spending/rules/rerun/detailed",
+      method: "POST",
+      body: JSON.stringify({ onlyUncategorized: false }),
+    });
+
+    stubFetch(1);
+    expect(await invoke("rerun_categorization_rules", { onlyUncategorized: true })).toBe(1);
+  });
+
   it("registers every command reachable from the web adapter", () => {
     const files = [
       ...collectSourceFiles(path.join(frontendSrcDir, "adapters/shared")),
@@ -380,6 +396,31 @@ describe("cloud backup capture transport", () => {
     expect(new Headers(mock.mock.calls[0][1]!.headers).get("Content-Type")).toBe(
       "application/json",
     );
+  });
+});
+
+describe("asset-holdings scope routing", () => {
+  it("keeps legacy asset reads on the existing GET endpoint", async () => {
+    const mock = stubFetch();
+    await invoke("get_asset_holdings", { assetId: "asset/one" });
+    const { url, method } = lastCall(mock);
+    expect(url).toBe("/api/v1/holdings/by-asset?assetId=asset%2Fone");
+    expect(method).toBe("GET");
+  });
+
+  it.each([
+    { type: "all" },
+    { type: "account", accountId: "a" },
+    { type: "accounts", accountIds: ["a", "b"] },
+    { type: "portfolio", portfolioId: "pf" },
+  ])("sends scoped asset reads through one POST request: $type", async (filter) => {
+    const mock = stubFetch();
+    await invoke("get_asset_holdings", { assetId: "cash:USD", filter });
+    expect(mock).toHaveBeenCalledTimes(1);
+    const { url, method, body } = lastCall(mock);
+    expect(url).toBe("/api/v1/holdings/by-asset/query");
+    expect(method).toBe("POST");
+    expect(JSON.parse(body as string)).toEqual({ assetId: "cash:USD", filter });
   });
 });
 
@@ -709,5 +750,29 @@ describe("agent token permission editing", () => {
     expect(url).toBe("/api/v1/agent-access/tokens/key%2F1");
     expect(method).toBe("PATCH");
     expect(JSON.parse(body as string)).toEqual({ scopes: ["holdings:read"] });
+  });
+});
+
+describe("contribution limit details and exclusions", () => {
+  it("fetches details with an encoded limit ID", async () => {
+    const mock = stubFetch({});
+    await invoke("get_contribution_limit_details", { limitId: "limit/1" });
+    expect(lastCall(mock)).toMatchObject({
+      url: "/api/v1/limits/limit%2F1/details",
+      method: "GET",
+    });
+  });
+
+  it.each([true, false])("sends an exclusion update with excluded=%s", async (excluded) => {
+    const mock = stubFetch({});
+    await invoke("set_contribution_activity_excluded", {
+      limitId: "limit/1",
+      activityId: "activity/1",
+      excluded,
+    });
+    const { url, method, body } = lastCall(mock);
+    expect(url).toBe("/api/v1/limits/limit%2F1/activities/activity%2F1");
+    expect(method).toBe("PUT");
+    expect(JSON.parse(body as string)).toEqual({ excluded });
   });
 });

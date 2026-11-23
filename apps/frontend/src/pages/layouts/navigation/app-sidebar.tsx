@@ -35,7 +35,7 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
   return (
     <div
       className={cn({
-        "light:bg-secondary/50 hidden h-full pt-12 transition-[width] duration-300 ease-in-out md:flex md:flex-shrink-0 md:overflow-hidden": true,
+        "light:bg-secondary/50 hidden h-full pt-12 transition-[width] duration-300 ease-in-out motion-reduce:transition-none md:flex md:flex-shrink-0 md:overflow-hidden": true,
         "md:w-sidebar": !collapsed,
         "md:w-sidebar-collapsed": collapsed,
       })}
@@ -44,7 +44,10 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
       <div className="z-20 w-full rounded-xl md:flex">
         <div className="flex w-full flex-col">
           <div className="flex min-h-0 w-full flex-1 flex-col">
-            <div data-tauri-drag-region="true" className="min-h-0 flex-1 overflow-y-auto">
+            <div
+              data-tauri-drag-region="true"
+              className="scrollbar-hide min-h-0 flex-1 overflow-y-auto"
+            >
               <nav
                 data-tauri-drag-region="true"
                 aria-label={t("common:layout.sidebar")}
@@ -59,12 +62,14 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
                     aria-label={t("common:app_name")}
                     className="group/logo block shrink-0 [perspective:400px]"
                   >
+                    {/* Collapsing flips the logo; hovering turns it a quarter clockwise, as on
+                        the website (mirrored while collapsed, hence -90deg). */}
                     <img
                       className={cn(
-                        "h-10 w-10 rounded-full bg-transparent shadow-lg transition-transform duration-1000 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+                        "h-10 w-10 rounded-full bg-transparent shadow-lg transition-transform duration-1000 ease-in-out motion-reduce:transition-none",
                         collapsed
-                          ? "motion-safe:[transform:rotateY(180deg)] motion-safe:group-hover/logo:[transform:rotateY(360deg)]"
-                          : "motion-safe:[transform:rotateY(0deg)] motion-safe:group-hover/logo:[transform:rotateY(180deg)]",
+                          ? "motion-safe:[transform:rotateY(180deg)] motion-safe:group-hover/logo:[transform:rotateY(180deg)_rotate(-90deg)]"
+                          : "motion-safe:[transform:rotateY(0deg)] motion-safe:group-hover/logo:[transform:rotateY(0deg)_rotate(90deg)]",
                       )}
                       aria-hidden="true"
                       src="/logo.png"
@@ -102,7 +107,7 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
                     document.dispatchEvent(event);
                   }}
                   className={cn(
-                    "text-foreground [&_svg]:size-5! mb-4 h-12 transition-all duration-300",
+                    "text-foreground [&_svg]:size-5! mb-4 h-12 transition-all duration-300 motion-reduce:transition-colors",
                     collapsed
                       ? "justify-center rounded-md"
                       : "bg-muted/50 hover:bg-muted/80 justify-start rounded-full px-4 shadow-none",
@@ -162,7 +167,7 @@ export function AppSidebar({ navigation }: AppSidebarProps) {
                   variant="ghost"
                   onClick={logout}
                   className={cn(
-                    "text-foreground [&_svg]:size-5! mb-1 h-12 rounded-md transition-all duration-300",
+                    "text-foreground [&_svg]:size-5! mb-1 h-12 rounded-md transition-all duration-300 motion-reduce:transition-colors",
                     collapsed ? "justify-center" : "justify-start",
                   )}
                   title={t("common:layout.logout")}
@@ -279,7 +284,7 @@ function NavItem({ item, collapsed, className, ...props }: NavItemProps) {
       className={cn(
         buttonVariants({ variant: isActive ? "secondary" : "ghost" }),
         cn(
-          "text-foreground [&_svg]:size-5! mb-1 h-12 rounded-md transition-all duration-300",
+          "text-foreground [&_svg]:size-5! mb-1 h-12 rounded-md transition-all duration-300 motion-reduce:transition-colors",
           // The selected item is a flat fill, not a raised button.
           isActive && "bg-secondary hover:bg-secondary/80 border-transparent bg-none shadow-none",
           collapsed ? "justify-center" : "justify-start",
@@ -321,7 +326,7 @@ function AddonsMenu({ addons, collapsed, onSetPinned }: AddonsMenuProps) {
           <Button
             variant={hasActiveAddon ? "secondary" : "ghost"}
             className={cn(
-              "text-foreground [&_svg]:size-5! mb-1 h-12 rounded-md transition-all duration-300",
+              "text-foreground [&_svg]:size-5! mb-1 h-12 rounded-md transition-all duration-300 motion-reduce:transition-colors",
               collapsed ? "justify-center" : "justify-start",
             )}
           />

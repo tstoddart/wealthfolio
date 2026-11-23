@@ -1,3 +1,4 @@
+import { ExternalLink } from "@/components/external-link";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { useTranslation } from "react-i18next";
 
@@ -103,14 +104,14 @@ function ActivitiesHelpContent({ transactionImport }: { transactionImport: boole
 
         <p className="text-xs">
           {t("activity:import.help.activitiesDocsPrefix")}
-          <a
+          <ExternalLink
             href="https://wealthfolio.app/docs/concepts/activity-types"
             target="_blank"
             rel="noopener noreferrer"
             className="underline"
           >
             {t("activity:import.help.activitiesDocsLink")}
-          </a>
+          </ExternalLink>
           .
         </p>
       </div>
@@ -164,13 +165,13 @@ function ActivitiesHelpContent({ transactionImport }: { transactionImport: boole
               <li>INTEREST</li>
               <li>DEPOSIT</li>
               <li>WITHDRAWAL</li>
-              <li>TRANSFER_IN (Moves cash/assets in)</li>
-              <li>TRANSFER_OUT (Moves cash/assets out)</li>
+              <li>TRANSFER_IN ({t("common:notifications.moves_cash_assets_in")})</li>
+              <li>TRANSFER_OUT ({t("common:notifications.moves_cash_assets_out")})</li>
               <li>FEE</li>
               <li>TAX</li>
-              <li>SPLIT (Use Amount as the split ratio, e.g. 2 for 2:1)</li>
-              <li>CREDIT (Cash credits: refunds, rebates, bonuses)</li>
-              <li>ADJUSTMENT (Non-trade corrections)</li>
+              <li>SPLIT ({t("common:notifications.split_ratio_example")})</li>
+              <li>CREDIT ({t("common:notifications.cash_credits_refunds_rebates_bonuses")})</li>
+              <li>ADJUSTMENT ({t("common:notifications.non_trade_corrections")})</li>
             </ul>
           </pre>
         </div>

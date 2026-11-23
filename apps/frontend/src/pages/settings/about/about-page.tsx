@@ -19,6 +19,7 @@ import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { Separator } from "@wealthfolio/ui/components/ui/separator";
 import { toast } from "@wealthfolio/ui/components/ui/use-toast";
 import { SettingsHeader } from "../settings-header";
+import { copyText } from "@wealthfolio/ui/lib/clipboard";
 
 export default function AboutSettingsPage() {
   const { t } = useTranslation();
@@ -53,7 +54,7 @@ export default function AboutSettingsPage() {
 
   const handleCopy = async (value: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyText(value);
       toast({
         title: t("settings:about_copied"),
         description: t("settings:about_copied_description", { label }),
@@ -70,7 +71,10 @@ export default function AboutSettingsPage() {
 
   return (
     <div className="space-y-6">
-      <SettingsHeader heading={t("settings:about_title")} text={t("settings:about_description")} />
+      <SettingsHeader
+        heading={t("settings:nav.items.about")}
+        text={t("settings:about_description")}
+      />
       <Separator />
 
       <Card>
@@ -133,13 +137,17 @@ export default function AboutSettingsPage() {
             <>
               <Separator />
 
-              <div className="grid gap-4">
+              <div className="grid min-w-0 grid-cols-1 gap-4">
                 <div className="space-y-1">
                   <p className="text-muted-foreground text-xs tracking-wide uppercase">
                     {t("settings:about_db_path")}
                   </p>
-                  <div className="flex items-center gap-2">
-                    <p className="bg-muted text-muted-foreground flex-1 truncate rounded-md px-3 py-2 font-mono text-xs">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <p
+                      className="bg-muted text-muted-foreground min-w-0 flex-1 truncate rounded-md px-3 py-2 font-mono text-xs"
+                      dir={dbPath ? "ltr" : undefined}
+                      title={dbPath || undefined}
+                    >
                       {dbPath || t("settings:about_unavailable")}
                     </p>
                     <Button
@@ -157,8 +165,12 @@ export default function AboutSettingsPage() {
                   <p className="text-muted-foreground text-xs tracking-wide uppercase">
                     {t("settings:about_logs_directory")}
                   </p>
-                  <div className="flex items-center gap-2">
-                    <p className="bg-muted text-muted-foreground flex-1 truncate rounded-md px-3 py-2 font-mono text-xs">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <p
+                      className="bg-muted text-muted-foreground min-w-0 flex-1 truncate rounded-md px-3 py-2 font-mono text-xs"
+                      dir={logsDir ? "ltr" : undefined}
+                      title={logsDir || undefined}
+                    >
                       {logsDir || t("settings:about_unavailable")}
                     </p>
                     <Button

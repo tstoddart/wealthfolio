@@ -1,7 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
+import { createAccount } from "./api";
 import { BASE_URL, completeOnboardingIfNeeded } from "./helpers";
-
-const api = `${BASE_URL}/api/v1`;
 
 // Symbols from e2e/fixtures/quotes, one BUY and one DIVIDEND each, so the preview overflows.
 const SYMBOLS = ["AAPL", "SHOP", "PANW", "MSFT", "TSLA", "NVDA", "ASML", "VOO", "KWEB", "JNJ"];
@@ -29,26 +28,12 @@ async function openActivityPreview(page: Page, csv: string) {
   await page.setViewportSize({ width: 1280, height: 800 });
   await completeOnboardingIfNeeded(page);
 
-  const accountName = `Sticky header ${Date.now().toString(36)}`;
-  const accountResponse = await page.request.post(`${api}/accounts`, {
-    data: {
-      name: accountName,
-      accountType: "SECURITIES",
-      currency: "USD",
-      isDefault: false,
-      isActive: true,
-      trackingMode: "TRANSACTIONS",
-    },
-  });
-  expect(accountResponse.ok(), await accountResponse.text()).toBeTruthy();
+  const account = await createAccount(page, { name: `Sticky header ${Date.now().toString(36)}` });
 
-  await page.goto(`${BASE_URL}/import`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${BASE_URL}/import?account=${account.id}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: /Import Activities/i })).toBeVisible({
     timeout: 15_000,
   });
-  await page.getByRole("combobox", { name: /Select an account/i }).click();
-  await page.getByPlaceholder("Search accounts...").fill(accountName);
-  await page.getByRole("option", { name: accountName }).first().click();
   await page.locator('input[type="file"]').setInputFiles({
     name: "sticky-header.csv",
     mimeType: "text/csv",
@@ -109,31 +94,34 @@ test("mapping preview keeps its header and # column pinned while it scrolls", as
   expect(result.numberColumnOnTop).toBe(true);
 });
 
-test("keyboard focus doesn't leave a row's select under the pinned header", async ({ page }) => {
+test("keyboard focus keeps row controls below the pinned header", async ({ page }) => {
   test.setTimeout(120_000);
   const table = await openActivityPreview(page, buildUnknownTypeCsv());
   const selects = table.locator("tbody").getByRole("combobox");
   await expect(selects).toHaveCount(20);
 
-  // Shift+Tab up from the last row. A select above the visible rows is scrolled into view; it
-  // has to land below the pinned header, with room for its 4px focus outline.
+  // Shift+Tab up from the last row's select, through each row's select and include checkbox. A
+  // control above the visible rows is scrolled into view; it has to land below the pinned header,
+  // with room for its 4px focus outline.
   await selects.last().focus();
   const stops: { row: number; gapBelowHeader: number }[] = [];
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 40; i++) {
     if (i > 0) await page.keyboard.press("Shift+Tab");
     stops.push(
       await page.evaluate(() => {
-        const select = document.activeElement as HTMLElement;
-        const row = select.closest("tr") as HTMLTableRowElement;
-        const header = select.closest("table")!.querySelector("thead")!.getBoundingClientRect();
+        const control = document.activeElement as HTMLElement;
+        const row = control.closest("tr") as HTMLTableRowElement;
+        const header = control.closest("table")!.querySelector("thead")!.getBoundingClientRect();
         return {
           row: row.rowIndex,
-          gapBelowHeader: Math.round(select.getBoundingClientRect().top - header.bottom),
+          gapBelowHeader: Math.round(control.getBoundingClientRect().top - header.bottom),
         };
       }),
     );
   }
 
-  expect(stops.map((stop) => stop.row)).toEqual(Array.from({ length: 20 }, (_, i) => 20 - i));
+  expect(stops.map((stop) => stop.row)).toEqual(
+    Array.from({ length: 40 }, (_, i) => 20 - Math.floor(i / 2)),
+  );
   expect(stops.filter((stop) => stop.gapBelowHeader < 4)).toEqual([]);
 });

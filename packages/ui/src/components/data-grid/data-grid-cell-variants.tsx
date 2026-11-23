@@ -1,9 +1,13 @@
 "use client";
 
+import { ExternalLink } from "../ui/external-link";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Calendar } from "../ui/calendar";
 import { Checkbox } from "../ui/checkbox";
+import { Calendar as RacCalendar } from "../ui/calendar-rac";
+import { DateSegment } from "../ui/datefield-rac";
+import { usePortalScopeProps } from "../ui/portal-scope";
 import {
   Command,
   CommandEmpty,
@@ -18,15 +22,35 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Skeleton } from "../ui/skeleton";
 import { Textarea } from "../ui/textarea";
 import { Icons } from "../ui/icons";
-import { fromDate, getLocalTimeZone, toCalendarDateTime } from "@internationalized/date";
+import {
+  type CalendarDate,
+  type CalendarIdentifier,
+  createCalendar,
+  fromDate,
+  getLocalTimeZone,
+  parseDate,
+  toCalendar,
+  toCalendarDateTime,
+} from "@internationalized/date";
+import { NumberParser } from "@internationalized/number";
+import {
+  Button as RacButton,
+  DateInput as DateInputRac,
+  DatePicker as RacDatePicker,
+  Dialog as RacDialog,
+  Group as RacGroup,
+  I18nProvider,
+  Popover as RacPopover,
+  useLocale,
+} from "react-aria-components";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useBadgeOverflow } from "../../hooks/use-badge-overflow";
 import { useDebouncedCallback } from "../../hooks/use-debounced-callback";
-import { quoteCurrencies } from "../../lib/currencies";
+import { getCurrencyDisplayLabel, quoteCurrencies } from "../../lib/currencies";
 import { generateId } from "../../lib/id";
-import { parseDateTimeInTimezone, parseLocalizedDecimalString } from "../../lib/formatting";
+import { localizeDecimalString, parseDateTimeInTimezone, parseLocalizedDecimalString } from "../../lib/formatting";
 import { cn, isKeyboardEventComposing } from "../../lib/utils";
 import { DataGridCellWrapper } from "./data-grid-cell-wrapper";
 import type { DataGridCellProps, FileCellData, SymbolSearchResult } from "./data-grid-types";
@@ -365,8 +389,10 @@ export function NumberCell<TData>({
   const formatting = useNumberFormatting();
   const { locale } = useLocalizationSettings();
   const initialValue = cell.getValue() as number | string | null;
-  const initialInputValue = String(initialValue ?? "");
+  const initialInputValue = localizeDecimalString(String(initialValue ?? ""), formatting);
   const [value, setValue] = React.useState(initialInputValue);
+  // An active draft keeps the region it was written in until editing ends.
+  const inputFormattingRef = React.useRef({ locale, formatting, initialInputValue });
   const inputRef = React.useRef<HTMLInputElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const cancelEditRef = React.useRef(false);
@@ -388,42 +414,43 @@ export function NumberCell<TData>({
 
   const parseCellValue = React.useCallback(
     (rawValue: string) => {
-      if (rawValue === initialInputValue) {
+      if (rawValue === inputFormattingRef.current.initialInputValue) {
         return { valid: true, value: initialComparable } as const;
       }
       const trimmed = rawValue.trim();
       if (trimmed === "") return { valid: true, value: null } as const;
       if (valueType !== "number") {
-        const parsed = parseLocalizedDecimalString(trimmed, locale);
+        const parsed = parseLocalizedDecimalString(trimmed, inputFormattingRef.current.locale);
         return parsed === undefined ? ({ valid: false } as const) : ({ valid: true, value: parsed } as const);
       }
 
-      const parsed = formatting.parseNumber(trimmed);
+      const parsed = inputFormattingRef.current.formatting.parseNumber(trimmed);
       return parsed === undefined ? ({ valid: false } as const) : ({ valid: true, value: parsed } as const);
     },
-    [formatting, initialComparable, initialInputValue, locale, valueType],
+    [initialComparable, valueType],
   );
 
   const prevInitialValueRef = React.useRef(initialValue);
   if (initialValue !== prevInitialValueRef.current) {
     prevInitialValueRef.current = initialValue;
-    setValue(String(initialValue ?? ""));
+    inputFormattingRef.current = { locale, formatting, initialInputValue };
+    setValue(initialInputValue);
   }
 
   const onBlur = React.useCallback(() => {
     if (cancelEditRef.current) {
-      setValue(String(initialValue ?? ""));
+      setValue(initialInputValue);
       tableMeta?.onCellEditingStop?.();
       return;
     }
     const parsed = parseCellValue(value);
     if (!parsed.valid) {
-      setValue(String(initialValue ?? ""));
+      setValue(inputFormattingRef.current.initialInputValue);
     } else if (!readOnly && parsed.value !== initialComparable) {
       tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: parsed.value });
     }
     tableMeta?.onCellEditingStop?.();
-  }, [tableMeta, rowIndex, columnId, initialValue, initialComparable, value, readOnly, parseCellValue]);
+  }, [tableMeta, rowIndex, columnId, initialInputValue, initialComparable, value, readOnly, parseCellValue]);
 
   const onChange = React.useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     setValue(event.target.value);
@@ -436,7 +463,7 @@ export function NumberCell<TData>({
           event.preventDefault();
           const parsed = parseCellValue(value);
           if (!parsed.valid) {
-            setValue(String(initialValue ?? ""));
+            setValue(inputFormattingRef.current.initialInputValue);
           } else if (parsed.value !== initialComparable) {
             tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: parsed.value });
           }
@@ -445,7 +472,7 @@ export function NumberCell<TData>({
           event.preventDefault();
           const parsed = parseCellValue(value);
           if (!parsed.valid) {
-            setValue(String(initialValue ?? ""));
+            setValue(inputFormattingRef.current.initialInputValue);
           } else if (parsed.value !== initialComparable) {
             tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: parsed.value });
           }
@@ -455,7 +482,7 @@ export function NumberCell<TData>({
         } else if (event.key === "Escape") {
           event.preventDefault();
           cancelEditRef.current = true;
-          setValue(String(initialValue ?? ""));
+          setValue(initialInputValue);
           inputRef.current?.blur();
         }
       } else if (isFocused) {
@@ -470,7 +497,7 @@ export function NumberCell<TData>({
         }
       }
     },
-    [isEditing, isFocused, initialValue, initialComparable, tableMeta, rowIndex, columnId, value, parseCellValue],
+    [isEditing, isFocused, initialInputValue, initialComparable, tableMeta, rowIndex, columnId, value, parseCellValue],
   );
 
   // Track if editing was started by typing (vs double-click/Enter)
@@ -486,12 +513,12 @@ export function NumberCell<TData>({
     if (wasEditingRef.current && !isEditing) {
       if (cancelEditRef.current) {
         cancelEditRef.current = false;
-        setValue(String(initialValue ?? ""));
+        setValue(initialInputValue);
       } else {
         const currentValue = valueRef.current;
         const parsed = parseCellValue(currentValue);
         if (!parsed.valid) {
-          setValue(String(initialValue ?? ""));
+          setValue(initialInputValue);
         } else if (!readOnly && parsed.value !== initialComparable) {
           tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: parsed.value });
         }
@@ -499,7 +526,14 @@ export function NumberCell<TData>({
       startedByTypingRef.current = false;
     }
     wasEditingRef.current = isEditing;
-  }, [isEditing, initialValue, initialComparable, readOnly, tableMeta, rowIndex, columnId, parseCellValue]);
+  }, [isEditing, initialInputValue, initialComparable, readOnly, tableMeta, rowIndex, columnId, parseCellValue]);
+
+  React.useEffect(() => {
+    if (!isEditing) {
+      inputFormattingRef.current = { locale, formatting, initialInputValue };
+      setValue(initialInputValue);
+    }
+  }, [isEditing, locale, formatting, initialInputValue]);
 
   React.useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -552,9 +586,11 @@ export function NumberCell<TData>({
         <span data-slot="grid-cell-content">
           {valueRenderer
             ? valueRenderer(initialValue, cell.row.original)
-            : value === "" || formatting.parseNumber(value) === undefined
-              ? value
-              : formatting.formatDecimal(value, { maximumFractionDigits: 8 })}
+            : initialValue == null || initialValue === ""
+              ? ""
+              : !Number.isFinite(Number(initialValue))
+                ? String(initialValue)
+                : formatting.formatDecimal(initialValue, { maximumFractionDigits: 8 })}
         </span>
       )}
     </DataGridCellWrapper>
@@ -749,7 +785,7 @@ export function UrlCell<TData>({
     >
       {!isEditing && displayValue ? (
         <div data-slot="grid-cell-content" className="size-full overflow-hidden">
-          <a
+          <ExternalLink
             data-focused={isFocused && !isDangerousUrl ? "" : undefined}
             data-invalid={isDangerousUrl ? "" : undefined}
             href={urlHref}
@@ -759,7 +795,7 @@ export function UrlCell<TData>({
             onClick={onLinkClick}
           >
             {displayValue}
-          </a>
+          </ExternalLink>
         </div>
       ) : (
         <div
@@ -927,34 +963,43 @@ export function SelectCell<TData>({
   const allowEmpty = cellOpts?.variant === "select" ? cellOpts.allowEmpty : false;
   const noneLabel = t("ui:dataGrid.none", "None");
   const emptyLabel = cellOpts?.variant === "select" ? (cellOpts.emptyLabel ?? noneLabel) : noneLabel;
+  const isDisabledFn = cellOpts?.variant === "select" ? cellOpts.isDisabled : undefined;
+  const isDisabled = isDisabledFn ? isDisabledFn(cell.row.original) : false;
+  const effectiveReadOnly = readOnly || isDisabled;
+  const isOpen = isEditing && !isDisabled;
 
   const prevInitialValueRef = React.useRef(initialValue);
   if (initialValue !== prevInitialValueRef.current) {
     prevInitialValueRef.current = initialValue;
     setValue(initialValue || "");
   }
+  // A pick the grid refused leaves the row unchanged; drop it once editing
+  // ends, so the editor opens on the row's value again.
+  if (!isOpen && value !== (initialValue || "")) {
+    setValue(initialValue || "");
+  }
 
   const onValueChange = React.useCallback(
     (newValue: string | null) => {
-      if (readOnly || newValue === null) return;
+      if (effectiveReadOnly || newValue === null) return;
       // Convert empty placeholder back to empty string
       const actualValue = newValue === EMPTY_SELECT_VALUE ? "" : newValue;
       setValue(actualValue);
       tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: actualValue || undefined });
       tableMeta?.onCellEditingStop?.();
     },
-    [tableMeta, rowIndex, columnId, readOnly],
+    [tableMeta, rowIndex, columnId, effectiveReadOnly],
   );
 
   const onOpenChange = React.useCallback(
     (isOpen: boolean) => {
-      if (isOpen && !readOnly) {
+      if (isOpen && !effectiveReadOnly) {
         tableMeta?.onCellEditingStart?.(rowIndex, columnId);
       } else {
         tableMeta?.onCellEditingStop?.();
       }
     },
-    [tableMeta, rowIndex, columnId, readOnly],
+    [tableMeta, rowIndex, columnId, effectiveReadOnly],
   );
 
   const onWrapperKeyDown = React.useCallback(
@@ -973,8 +1018,11 @@ export function SelectCell<TData>({
     [isEditing, isFocused, initialValue, tableMeta],
   );
 
-  const selectedOption = options.find((opt) => opt.value === value);
-  const displayLabel = selectedOption?.label ?? value;
+  // Out of edit mode the cell shows the row's value: an edit the grid refused
+  // leaves the row, and so the cell, unchanged.
+  const shownValue = isOpen ? value : initialValue || "";
+  const selectedOption = options.find((opt) => opt.value === shownValue);
+  const displayLabel = selectedOption?.label ?? shownValue;
 
   // Render the display content - use valueRenderer if provided, otherwise default Badge
   const renderDisplayContent = () => {
@@ -983,7 +1031,7 @@ export function SelectCell<TData>({
     if (valueRenderer) {
       // Don't wrap in data-slot="grid-cell-content" - let valueRenderer control its own styling
       // This prevents line-clamp from truncating badges/custom renderers
-      return valueRenderer(value, selectedOption, cell.row.original);
+      return valueRenderer(shownValue, selectedOption, cell.row.original);
     }
 
     return (
@@ -1010,16 +1058,16 @@ export function SelectCell<TData>({
       isSelected={isSelected}
       isSearchMatch={isSearchMatch}
       isActiveSearchMatch={isActiveSearchMatch}
-      readOnly={readOnly}
+      readOnly={effectiveReadOnly}
       cellState={cellState}
       onKeyDown={onWrapperKeyDown}
     >
-      {isEditing ? (
+      {isOpen ? (
         <Select
           value={selectValue}
           items={selectItems}
           onValueChange={onValueChange}
-          open={isEditing}
+          open={isOpen}
           onOpenChange={onOpenChange}
         >
           <SelectTrigger className="size-full h-auto items-start border-none p-0 shadow-none focus-visible:outline-none dark:bg-transparent [&_svg]:hidden">
@@ -1447,6 +1495,16 @@ function toDateInputString(date: Date | string | undefined): string {
   return `${year}-${month}-${day}`;
 }
 
+// YYYY-MM-DD string to the react-aria value of the date-input editor.
+function toCalendarDate(value: string): CalendarDate | null {
+  if (!value) return null;
+  try {
+    return parseDate(value);
+  } catch {
+    return null;
+  }
+}
+
 // Helper to get date-only timestamp (midnight) for comparison
 function getDateOnlyTimestamp(value: Date | string | undefined): number | null {
   if (!value) return null;
@@ -1454,6 +1512,32 @@ function getDateOnlyTimestamp(value: Date | string | undefined): number | null {
   if (Number.isNaN(d.getTime())) return null;
   // Normalize to midnight for date-only comparison
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+// The number a date segment shows. On iOS, react-aria's segments are text boxes with no
+// numeric value, so the number comes from the text, without its direction marks.
+function dateSegmentNumber(segment: HTMLElement, locale: string): number {
+  const value = segment.getAttribute("aria-valuenow");
+  if (value !== null) return Number(value);
+  return new NumberParser(locale).parse((segment.textContent ?? "").replace(/[⁦-⁩]/g, ""));
+}
+
+// Whether the date field shows something it can't save: an empty segment, or a date
+// that doesn't exist. For 31 April, react-aria shows what was typed but reports another
+// date, so the shown segments are compared with the reported date in the field's calendar.
+function dateFieldShowsUnsavableDate(field: HTMLElement, value: string, locale: string): boolean {
+  const segments = Array.from(field.querySelectorAll<HTMLElement>('[data-type]:not([data-type="literal"])'));
+  if (segments.some((segment) => segment.hasAttribute("data-placeholder"))) return true;
+  const reported = toCalendarDate(value);
+  if (!reported) return segments.length > 0;
+  const calendar = createCalendar(new Intl.DateTimeFormat(locale).resolvedOptions().calendar as CalendarIdentifier);
+  const date = toCalendar(reported, calendar);
+  return (["day", "month", "year"] as const).some((type) => {
+    const segment = segments.find((candidate) => candidate.getAttribute("data-type") === type);
+    if (segment === undefined) return false;
+    const shown = dateSegmentNumber(segment, locale);
+    return !Number.isNaN(shown) && shown !== date[type];
+  });
 }
 
 export function DateInputCell<TData>({
@@ -1473,8 +1557,25 @@ export function DateInputCell<TData>({
   const formatting = useDateFormatting();
   const initialValue = cell.getValue() as Date | string | undefined;
   const [value, setValue] = React.useState(() => toDateInputString(initialValue));
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  // The editor is react-aria's date picker rather than <input type="date">: browsers
+  // render native date inputs in their own UI locale, ignoring the formatting region,
+  // so the day/month order while editing could differ from the displayed date.
+  // The provider's react-aria locale is the interface language with the formatting
+  // region (es-US is day-first, en-US month-first), so the field gets the formatting
+  // locale itself; the calendar keeps the interface language.
+  const { t } = useTranslation();
+  const { direction, locale: interfaceLocale } = useLocale();
+  const { locale: formattingLocale } = useLocalizationSettings();
+  const portalScopeProps = usePortalScopeProps();
+  const columnDef = cell.column.columnDef;
+  const columnLabel = columnDef.meta?.label ?? (typeof columnDef.header === "string" ? columnDef.header : columnId);
+  const calendarValue = React.useMemo(() => toCalendarDate(value), [value]);
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const valueRef = React.useRef(value);
+  valueRef.current = value;
+  const isCalendarOpenRef = React.useRef(false);
+  const pickedFromCalendarRef = React.useRef(false);
+  const showsUnsavableDateRef = React.useRef(false);
 
   // Compare by date-only timestamp instead of reference for Date objects
   const prevTimestampRef = React.useRef(getDateOnlyTimestamp(initialValue));
@@ -1484,12 +1585,18 @@ export function DateInputCell<TData>({
     setValue(toDateInputString(initialValue));
   }
 
-  const onBlur = React.useCallback(() => {
-    if (readOnly) {
-      tableMeta?.onCellEditingStop?.();
+  // Saves the edited date. A date the field can't save keeps the stored one.
+  const commitEdit = React.useCallback(() => {
+    // An empty value also covers platforms whose date segments can't be read back.
+    if (showsUnsavableDateRef.current || !valueRef.current) {
+      showsUnsavableDateRef.current = false;
+      const stored = toDateInputString(initialValue);
+      valueRef.current = stored;
+      setValue(stored);
       return;
     }
-    const date = value ? parseDateLocal(value) : undefined;
+    const currentValue = valueRef.current;
+    const date = currentValue ? parseDateLocal(currentValue) : undefined;
     const initialDate = initialValue
       ? initialValue instanceof Date
         ? initialValue
@@ -1502,68 +1609,93 @@ export function DateInputCell<TData>({
     if (newTimestamp !== oldTimestamp) {
       tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: date });
     }
-    tableMeta?.onCellEditingStop?.();
-  }, [tableMeta, rowIndex, columnId, value, initialValue, readOnly]);
+  }, [tableMeta, rowIndex, columnId, initialValue]);
 
-  const onChange = React.useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    setValue(event.target.value);
+  const onBlur = React.useCallback(() => {
+    if (!readOnly) commitEdit();
+    tableMeta?.onCellEditingStop?.();
+  }, [tableMeta, readOnly, commitEdit]);
+
+  const onChange = React.useCallback((date: CalendarDate | null) => {
+    const next = date ? date.toString() : "";
+    // Updated here too, so stopping the edit in the same event saves this value.
+    valueRef.current = next;
+    setValue(next);
+    // Leaving the field also reports a change, with an impossible day already moved
+    // to a real one, so only a calendar pick clears what the typed field showed.
+    if (isCalendarOpenRef.current) {
+      pickedFromCalendarRef.current = true;
+      showsUnsavableDateRef.current = false;
+    }
   }, []);
+
+  const checkFieldDate = React.useCallback(
+    (field: HTMLElement) => {
+      showsUnsavableDateRef.current = dateFieldShowsUnsavableDate(field, valueRef.current, formattingLocale);
+    },
+    [formattingLocale],
+  );
+
+  const onFieldEvent = React.useCallback(
+    (event: React.SyntheticEvent<HTMLDivElement>) => checkFieldDate(event.currentTarget),
+    [checkFieldDate],
+  );
+
+  // Text can arrive without key events, and the grid ends the edit on mouse down,
+  // before the field loses focus and moves an impossible day to a real one.
+  React.useEffect(() => {
+    if (!isEditing) return;
+    const onPointerDown = () => {
+      if (containerRef.current) checkFieldDate(containerRef.current);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [isEditing, checkFieldDate]);
+
+  // The grid ends the edit from its own key listener, which runs before this cell's
+  // bubbling handlers and can arrive before the last digit's key-up.
+  const onFieldKeyDownCapture = React.useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== "Enter" && event.key !== "Tab") return;
+      checkFieldDate(event.currentTarget);
+    },
+    [checkFieldDate],
+  );
+
+  // A day picked in the calendar ends the edit, as in the date variant; closing the
+  // calendar without picking (Escape, click outside) returns to the typed field.
+  const onCalendarOpenChange = React.useCallback(
+    (isOpen: boolean) => {
+      isCalendarOpenRef.current = isOpen;
+      if (!isOpen && pickedFromCalendarRef.current) {
+        pickedFromCalendarRef.current = false;
+        tableMeta?.onCellEditingStop?.();
+      }
+    },
+    [tableMeta],
+  );
 
   // Track previous editing state to detect when editing stops
   const wasEditingRef = React.useRef(isEditing);
-  const valueRef = React.useRef(value);
-  valueRef.current = value;
 
   React.useEffect(() => {
     // When editing stops (transitions from true to false), save the value
-    if (wasEditingRef.current && !isEditing) {
-      const currentValue = valueRef.current;
-      const date = currentValue ? parseDateLocal(currentValue) : undefined;
-      const initialDate = initialValue
-        ? initialValue instanceof Date
-          ? initialValue
-          : parseDateLocal(initialValue)
-        : undefined;
-
-      const newTimestamp = getDateOnlyTimestamp(date);
-      const oldTimestamp = getDateOnlyTimestamp(initialDate);
-      if (!readOnly && newTimestamp !== oldTimestamp) {
-        tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: date });
-      }
+    if (wasEditingRef.current && !isEditing && !readOnly) {
+      commitEdit();
     }
     wasEditingRef.current = isEditing;
-  }, [isEditing, initialValue, readOnly, tableMeta, rowIndex, columnId]);
+  }, [isEditing, readOnly, commitEdit]);
 
   const onWrapperKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (isEditing) {
         if (event.key === "Enter") {
           event.preventDefault();
-          const date = value ? parseDateLocal(value) : undefined;
-          const initialDate = initialValue
-            ? initialValue instanceof Date
-              ? initialValue
-              : parseDateLocal(initialValue)
-            : undefined;
-          const newTimestamp = getDateOnlyTimestamp(date);
-          const oldTimestamp = getDateOnlyTimestamp(initialDate);
-          if (newTimestamp !== oldTimestamp) {
-            tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: date });
-          }
+          commitEdit();
           tableMeta?.onCellEditingStop?.({ moveToNextRow: true });
         } else if (event.key === "Tab") {
           event.preventDefault();
-          const date = value ? parseDateLocal(value) : undefined;
-          const initialDate = initialValue
-            ? initialValue instanceof Date
-              ? initialValue
-              : parseDateLocal(initialValue)
-            : undefined;
-          const newTimestamp = getDateOnlyTimestamp(date);
-          const oldTimestamp = getDateOnlyTimestamp(initialDate);
-          if (newTimestamp !== oldTimestamp) {
-            tableMeta?.onDataUpdate?.({ rowIndex, columnId, value: date });
-          }
+          commitEdit();
           tableMeta?.onCellEditingStop?.({
             direction: event.shiftKey ? "previous" : "next",
           });
@@ -1579,15 +1711,8 @@ export function DateInputCell<TData>({
         });
       }
     },
-    [isEditing, isFocused, initialValue, tableMeta, rowIndex, columnId, value],
+    [isEditing, isFocused, initialValue, tableMeta, commitEdit],
   );
-
-  React.useEffect(() => {
-    if (isEditing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [isEditing]);
 
   return (
     <DataGridCellWrapper<TData>
@@ -1607,14 +1732,49 @@ export function DateInputCell<TData>({
       onKeyDown={onWrapperKeyDown}
     >
       {isEditing ? (
-        <input
-          ref={inputRef}
-          type="date"
-          value={value}
-          onChange={onChange}
-          onBlur={onBlur}
-          className="w-full border-none bg-transparent p-0 text-sm outline-none"
-        />
+        <I18nProvider locale={formattingLocale}>
+          <RacDatePicker
+            aria-label={columnLabel}
+            autoFocus
+            granularity="day"
+            value={calendarValue}
+            onChange={onChange}
+            onBlur={onBlur}
+            onOpenChange={onCalendarOpenChange}
+            className="w-full"
+          >
+            <div
+              className="contents"
+              onBlurCapture={onFieldEvent}
+              onKeyDownCapture={onFieldKeyDownCapture}
+              onKeyUpCapture={onFieldEvent}
+            >
+              <RacGroup className="flex w-full items-center gap-1">
+                <DateInputRac dir={direction} className="flex min-w-0 flex-1 items-center text-sm outline-none">
+                  {(segment) => <DateSegment segment={segment} className="px-px py-0" />}
+                </DateInputRac>
+                <RacButton
+                  aria-label={t("ui:datePicker.pick", "Pick a date")}
+                  className="text-muted-foreground/80 hover:text-foreground focus-visible:outline-ring flex size-5 shrink-0 items-center justify-center rounded-sm outline-none focus-visible:outline-2"
+                >
+                  <Icons.CalendarIcon size={14} />
+                </RacButton>
+              </RacGroup>
+            </div>
+            <RacPopover
+              {...portalScopeProps}
+              className="bg-background text-popover-foreground z-50 rounded-lg border shadow-lg outline-hidden"
+              offset={4}
+            >
+              {/* data-grid-popover keeps the grid from treating clicks here as outside clicks. */}
+              <RacDialog data-grid-popover="" className="max-h-[inherit] overflow-auto p-2 outline-none">
+                <I18nProvider locale={interfaceLocale}>
+                  <RacCalendar />
+                </I18nProvider>
+              </RacDialog>
+            </RacPopover>
+          </RacDatePicker>
+        </I18nProvider>
       ) : (
         <span data-slot="grid-cell-content">
           {value ? formatting.formatCalendarDate(value, { dateStyle: "short" }) : ""}
@@ -1814,12 +1974,12 @@ export function DateTimeCell<TData>({
   );
 }
 
-function formatFileSize(bytes: number): string {
+function formatFileSize(bytes: number, formatting: ReturnType<typeof useNumberFormatting>): string {
   if (bytes === 0) return "0 B";
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${Number.parseFloat((bytes / k ** i).toFixed(1))} ${sizes[i]}`;
+  return `${formatting.formatDecimal(bytes / k ** i, { maximumFractionDigits: 1 })} ${sizes[i]}`;
 }
 
 function getFileIcon(type: string) {
@@ -1849,6 +2009,7 @@ export function FileCell<TData>({
   cellState,
 }: DataGridCellProps<TData>) {
   const { t } = useTranslation();
+  const formatting = useNumberFormatting();
   const cellValue = React.useMemo(() => (cell.getValue() as FileCellData[]) ?? [], [cell]);
 
   const cellKey = getCellKey(rowIndex, columnId);
@@ -1903,7 +2064,7 @@ export function FileCell<TData>({
     (file: File): string | null => {
       if (maxFileSize && file.size > maxFileSize) {
         return t("ui:dataGrid.fileSizeExceeds", "File size exceeds {{size}}", {
-          size: formatFileSize(maxFileSize),
+          size: formatFileSize(maxFileSize, formatting),
         });
       }
       if (acceptedTypes) {
@@ -1924,7 +2085,7 @@ export function FileCell<TData>({
       }
       return null;
     },
-    [maxFileSize, acceptedTypes, t],
+    [maxFileSize, acceptedTypes, formatting, t],
   );
 
   const addFiles = React.useCallback(
@@ -2370,10 +2531,12 @@ export function FileCell<TData>({
                   {maxFileSize
                     ? maxFiles
                       ? t("ui:dataGrid.maxSizeAndFiles", "Max size: {{size}} • Max {{count}} files", {
-                          size: formatFileSize(maxFileSize),
+                          size: formatFileSize(maxFileSize, formatting),
                           count: maxFiles,
                         })
-                      : t("ui:dataGrid.maxSize", "Max size: {{size}}", { size: formatFileSize(maxFileSize) })
+                      : t("ui:dataGrid.maxSize", "Max size: {{size}}", {
+                          size: formatFileSize(maxFileSize, formatting),
+                        })
                     : maxFiles
                       ? t("ui:dataGrid.maxFiles", "Max {{count}} files", { count: maxFiles })
                       : t("ui:dataGrid.selectFilesToUpload", "Select files to upload")}
@@ -2427,7 +2590,7 @@ export function FileCell<TData>({
                                 ? t("ui:dataGrid.uploading", "Uploading...")
                                 : isFileDeleting
                                   ? t("ui:dataGrid.deleting", "Deleting...")
-                                  : formatFileSize(file.size)}
+                                  : formatFileSize(file.size, formatting)}
                             </p>
                           </div>
                           <Button
@@ -2835,7 +2998,7 @@ export function CurrencyCell<TData>({
   readOnly,
   cellState,
 }: DataGridCellProps<TData>) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const initialValue = cell.getValue() as string;
   const [value, setValue] = React.useState(initialValue ?? "");
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -2849,6 +3012,14 @@ export function CurrencyCell<TData>({
     prevInitialValueRef.current = initialValue;
     setValue(initialValue ?? "");
   }
+  // A pick the grid refused leaves the row unchanged; drop it once editing
+  // ends, so the editor opens on the row's value again.
+  if (!isEditing && value !== (initialValue ?? "")) {
+    setValue(initialValue ?? "");
+  }
+  // Out of edit mode the cell shows the row's value: an edit the grid refused
+  // leaves the row, and so the cell, unchanged.
+  const shownValue = isEditing ? value : (initialValue ?? "");
 
   const filteredCurrencies = React.useMemo(() => {
     if (!searchQuery.trim()) {
@@ -2856,9 +3027,14 @@ export function CurrencyCell<TData>({
     }
     const query = searchQuery.toLowerCase();
     return quoteCurrencies.filter(
-      (currency) => currency.value.toLowerCase().includes(query) || currency.label.toLowerCase().includes(query),
+      (currency) =>
+        currency.value.toLowerCase().includes(query) ||
+        currency.label.toLowerCase().includes(query) ||
+        getCurrencyDisplayLabel(currency, i18n.resolvedLanguage ?? i18n.language, t)
+          .toLowerCase()
+          .includes(query),
     );
-  }, [searchQuery]);
+  }, [searchQuery, i18n.language, i18n.resolvedLanguage, t]);
 
   const handleSelect = React.useCallback(
     (currencyValue: string) => {
@@ -2942,8 +3118,8 @@ export function CurrencyCell<TData>({
       onKeyDown={onWrapperKeyDown}
     >
       <Popover open={isEditing} onOpenChange={onOpenChange}>
-        <span ref={anchorRef} data-slot="grid-cell-content" className={cn(!value && "text-muted-foreground")}>
-          {value || t("ui:dataGrid.currency", "Currency")}
+        <span ref={anchorRef} data-slot="grid-cell-content" className={cn(!shownValue && "text-muted-foreground")}>
+          {shownValue || t("ui:dataGrid.currency", "Currency")}
         </span>
         {isEditing && (
           <PopoverContent
@@ -2974,7 +3150,9 @@ export function CurrencyCell<TData>({
                     >
                       <div className="flex flex-col">
                         <span className="font-mono text-xs font-semibold">{currency.value}</span>
-                        <span className="text-muted-foreground text-xs">{currency.label}</span>
+                        <span className="text-muted-foreground text-xs">
+                          {getCurrencyDisplayLabel(currency, i18n.resolvedLanguage ?? i18n.language, t)}
+                        </span>
                       </div>
                       {value === currency.value && <Icons.Check className="size-4" />}
                     </CommandItem>

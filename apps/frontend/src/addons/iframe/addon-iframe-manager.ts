@@ -1,3 +1,4 @@
+import i18n from "i18next";
 import type { AddonManifest, Permission, SidebarItemConfig } from "@wealthfolio/addon-sdk";
 import type { AddonAsset, AddonFile } from "@/adapters/types";
 import {
@@ -10,6 +11,7 @@ import {
 } from "@/addons/addons-runtime-context";
 import { loadAddonAsset, logger } from "@/adapters";
 import { generateId, generateSecureUuid } from "@/lib/id";
+import { BackendError } from "@/lib/backend-error";
 import { toast } from "sonner";
 import { collectAddonThemeSnapshot, type AddonThemeSnapshot } from "./addon-sandbox-theme";
 import {
@@ -228,7 +230,7 @@ function notifyPermissionDenialOnce(addonId: string, method: string | undefined,
     return;
   }
   notifiedPermissionDenials.add(key);
-  toast.error("Add-on permission denied", {
+  toast.error(i18n.t("common:notifications.add_on_permission_denied"), {
     description: `'${addonId}' tried to use '${method ?? "an API"}' without permission. Updating the add-on may fix this.`,
     duration: 15000,
   });
@@ -293,7 +295,7 @@ function notifyClassifiedAddonErrorOnce(addonId: string, rawMessage: string | un
     return;
   }
   notifiedRuntimeErrors.add(key);
-  toast.error(`Add-on '${addonId}' error`, {
+  toast.error(i18n.t("common:notifications.addon_error", { addonId }), {
     description: hint,
     duration: 15000,
   });
@@ -354,6 +356,8 @@ export const ALLOWED_API_METHODS = new Set([
   "assets.updateProfile",
   "assets.updateQuoteMode",
   "alternativeAssets.getAll",
+  "allocationTargets.getAll",
+  "allocationTargets.getDrift",
   "quotes.update",
   "quotes.getHistory",
   "performance.calculateHistory",
@@ -1211,6 +1215,7 @@ export class AddonIframeManager {
   ) {
     this.post(runtime, "rpcResponse", {
       error: formatUnknownError(error),
+      errorCode: error instanceof BackendError ? error.errorCode : undefined,
       ok,
       requestId,
       result,
@@ -1237,7 +1242,7 @@ export class AddonIframeManager {
 
     this.themeObserver = new MutationObserver(this.scheduleThemeBroadcast);
     this.themeObserver.observe(document.documentElement, {
-      attributeFilter: ["class", "style", "data-theme", "data-text-size"],
+      attributeFilter: ["class", "style", "data-theme", "data-text-size", "data-gain-colors"],
       attributes: true,
     });
     this.themeObserver.observe(document.body, {

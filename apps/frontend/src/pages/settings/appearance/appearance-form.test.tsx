@@ -45,6 +45,21 @@ it("shows the default text size when none is saved", () => {
   ).toHaveAttribute("aria-pressed", "true");
 });
 
+it("saves the gain and loss colours, starting from green up", () => {
+  platform.isMobile = true;
+  render(<AppearanceForm />);
+
+  const group = screen.getByRole("group", { name: "settings:appearance_gain_colors_title" });
+  const greenUp = screen.getByRole("button", { name: "settings:appearance_gain_colors_green_up" });
+  expect(group).toContainElement(greenUp);
+  expect(greenUp).toHaveAttribute("aria-pressed", "true");
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "settings:appearance_gain_colors_red_up_blue_down" }),
+  );
+  expect(context.updateSettings).toHaveBeenCalledWith({ gainColors: "red-up-blue-down" });
+});
+
 it("offers the menu bar setting in the Windows and Linux app", () => {
   render(<AppearanceForm />);
   expect(screen.getByText("settings:appearance_menu_bar")).toBeInTheDocument();
@@ -56,9 +71,12 @@ it("hides the menu bar setting in the macOS app, which always keeps its menu", (
   expect(screen.queryByText("settings:appearance_menu_bar")).not.toBeInTheDocument();
 });
 
-it("leaves the web app's menu bar setting alone on macOS", () => {
-  platform.isMacOS = true;
-  platform.isTauri = false;
-  render(<AppearanceForm />);
-  expect(screen.getByText("settings:appearance_menu_bar")).toBeInTheDocument();
-});
+it.each([false, true])(
+  "hides the menu bar setting in the web app, which has no menu bar (macOS: %s)",
+  (isMacOS) => {
+    platform.isMacOS = isMacOS;
+    platform.isTauri = false;
+    render(<AppearanceForm />);
+    expect(screen.queryByText("settings:appearance_menu_bar")).not.toBeInTheDocument();
+  },
+);

@@ -1,9 +1,11 @@
+import i18n from "i18next";
 import {
   isActivityEditCancelled,
   useActivitySplitReview,
   useInternalTransferPairSplitReview,
 } from "@/features/spending/components/activity-split-review-provider";
 import {
+  convertToInternalTransfer,
   createActivity,
   deleteActivity,
   linkTransferActivities,
@@ -21,6 +23,7 @@ import {
   ActivityCreate,
   ActivityDetails,
   ActivityUpdate,
+  ConvertToTransferRequest,
   InternalTransferPairRequest,
   InternalTransferPairResponse,
 } from "@/lib/types";
@@ -29,6 +32,7 @@ import { ActivityType, InstrumentType } from "@/lib/constants";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { NewActivityFormValues } from "../components/forms/schemas";
+import { buildConversionDuplicate } from "../utils/conversion-counterpart";
 import { buildSameAccountFxDuplicate } from "../utils/duplicate-fx-transfer";
 
 export function useActivityMutations(
@@ -109,7 +113,7 @@ export function useActivityMutations(
     onError: (error: string) => {
       if (isActivityEditCancelled(error)) return;
       logger.error(`Error ${action} activity: ${String(error)}`);
-      toast.error(`Failed ${action} activity`, {
+      toast.error(i18n.t(`common:notifications.activity_failed_${action}`), {
         description: String(error),
       });
     },
@@ -314,15 +318,30 @@ export function useActivityMutations(
       linkTransferActivities(activityAId, activityBId),
     onSuccess: () => {
       queryClient.invalidateQueries();
-      toast.success("Transfers linked", {
-        description: "The two activities are now paired as an internal transfer.",
+      toast.success(i18n.t("common:notifications.transfers_linked"), {
+        description: i18n.t("common:notifications.transfers_linked_description"),
       });
     },
     onError: (error: string) => {
       if (isActivityEditCancelled(error)) return;
       logger.error(`Error linking transfers: ${String(error)}`);
-      toast.error("Failed to link transfers", {
+      toast.error(i18n.t("common:notifications.failed_to_link_transfers"), {
         description: String(error),
+      });
+    },
+  });
+
+  // Links a transfer with a plain deposit or withdrawal, which becomes its other side.
+  const convertToTransferMutation = useMutation({
+    mutationFn: (request: ConvertToTransferRequest) => convertToInternalTransfer(request),
+    onSuccess: () => {
+      queryClient.invalidateQueries();
+      toast.success(i18n.t("activity:transfer_match.convert_success"));
+    },
+    onError: (error: unknown) => {
+      logger.error(`Error converting to a transfer: ${String(error)}`);
+      toast.error(i18n.t("activity:transfer_match.convert_error"), {
+        description: error instanceof Error ? error.message : String(error),
       });
     },
   });
@@ -332,20 +351,30 @@ export function useActivityMutations(
       unlinkTransferActivities(activityAId, activityBId),
     onSuccess: () => {
       queryClient.invalidateQueries();
-      toast.success("Transfers unlinked", {
-        description: "The two activities are external transfers again.",
+      toast.success(i18n.t("common:notifications.transfers_unlinked"), {
+        description: i18n.t("common:notifications.transfers_unlinked_description"),
       });
     },
     onError: (error: string) => {
       if (isActivityEditCancelled(error)) return;
       logger.error(`Error unlinking transfers: ${String(error)}`);
-      toast.error("Failed to unlink transfers", {
+      toast.error(i18n.t("common:notifications.failed_to_unlink_transfers"), {
         description: String(error),
       });
     },
   });
 
   const duplicateActivity = async (activityToDuplicate: ActivityDetails) => {
+    const conversion = await buildConversionDuplicate(activityToDuplicate);
+    if (conversion) {
+      const result = await saveActivities({ creates: conversion });
+      if (result.errors.length)
+        throw new Error(result.errors.map((error) => error.message).join("; "));
+      const duplicated = result.created.find((row) => row.subtype === activityToDuplicate.subtype);
+      if (!duplicated || result.created.length !== 2)
+        throw new Error("Failed duplicating conversion.");
+      return duplicated;
+    }
     const exchange = await buildSameAccountFxDuplicate(activityToDuplicate);
     if (exchange) {
       const result = await saveActivities({ creates: exchange });
@@ -455,7 +484,9 @@ export function useActivityMutations(
       // Show errors from partial failures
       if (result.errors?.length > 0) {
         const messages = result.errors.map((e) => e.message).join("; ");
-        toast.error("Some activities failed to save", { description: messages });
+        toast.error(i18n.t("common:notifications.some_activities_failed_to_save"), {
+          description: messages,
+        });
         logger.error(`Bulk save partial failure: ${JSON.stringify(result.errors)}`);
       }
 
@@ -467,7 +498,7 @@ export function useActivityMutations(
     onError: (error: string) => {
       if (isActivityEditCancelled(error)) return;
       logger.error(`Error saving activities: ${String(error)}`);
-      toast.error("Failed to save activities", {
+      toast.error(i18n.t("ai:recordActivities.failedSave"), {
         description: String(error),
       });
     },
@@ -486,7 +517,7 @@ export function useActivityMutations(
     onError: (error: string) => {
       if (isActivityEditCancelled(error)) return;
       logger.error(`Error saving internal transfer pair: ${String(error)}`);
-      toast.error("Failed to save transfer", {
+      toast.error(i18n.t("common:notifications.failed_to_save_transfer"), {
         description: String(error),
       });
     },
@@ -500,6 +531,7 @@ export function useActivityMutations(
     saveActivitiesMutation,
     saveInternalTransferPairMutation,
     linkTransferActivitiesMutation,
+    convertToTransferMutation,
     unlinkTransferActivitiesMutation,
   };
 }

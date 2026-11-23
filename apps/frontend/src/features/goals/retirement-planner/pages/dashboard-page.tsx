@@ -7,7 +7,6 @@ import {
   CardHeader,
   CardTitle,
   Skeleton,
-  useAmountFormatting,
   useNumberFormatting,
   Spinner,
 } from "@wealthfolio/ui";
@@ -49,8 +48,10 @@ import {
   type PlannerMode,
 } from "../lib/dashboard-math";
 import { expenseAgeRangeLabel, expenseItems, isExpenseActiveAtAge } from "../lib/expense-items";
+import type { GoalMilestone } from "../lib/goal-milestones";
 import type { RetirementPlan } from "../types";
 import { Alert, AlertDescription, AlertTitle } from "@wealthfolio/ui/components/ui/alert";
+import { usePrivateAmountFormatting } from "../hooks/use-private-amount-formatting";
 
 interface Props {
   plan: RetirementPlan;
@@ -69,6 +70,8 @@ interface Props {
   retirementOverviewIsFetching?: boolean;
   goalId?: string;
   dcLinkedAccountIds?: string[];
+  goalMilestones?: GoalMilestone[];
+  onOpenGoal?: (goalId: string) => void;
 }
 
 type CoverageView = "at-retirement" | "over-time";
@@ -187,8 +190,10 @@ export default function DashboardPage({
   retirementOverviewIsFetching,
   goalId,
   dcLinkedAccountIds,
+  goalMilestones = [],
+  onOpenGoal,
 }: Props) {
-  const formatting = useAmountFormatting();
+  const formatting = usePrivateAmountFormatting();
   const numberFormatting = useNumberFormatting();
   const { t } = useTranslation();
   const L = modeLabel(plannerMode, t);
@@ -198,6 +203,7 @@ export default function DashboardPage({
   const currency = plan.currency;
   const [chartValueMode, setChartValueMode] = useState<ChartValueMode>("real");
   const [coverageView, setCoverageView] = useState<CoverageView>("at-retirement");
+  const [showGoalMilestones, setShowGoalMilestones] = useState(true);
   const sidebarKey = useMemo(() => `${plannerMode}:${JSON.stringify(plan)}`, [plan, plannerMode]);
   const valueModeLabel =
     chartValueMode === "real"
@@ -469,7 +475,9 @@ export default function DashboardPage({
     t,
   );
   const heroHealth =
-    readiness.tone === "good" ? "on_track" : readiness.tone === "watch" ? "at_risk" : "off_track";
+    retirementOverview?.status === "achieved"
+      ? "on_track"
+      : (retirementOverview?.status ?? "not_applicable");
   const heroGuidance = readiness.body;
 
   if (!retirementOverview) {
@@ -568,8 +576,8 @@ export default function DashboardPage({
 
             return (
               <Card className="overflow-hidden">
-                <CardContent className="px-7 py-6">
-                  <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3">
+                <CardContent className="px-7 py-5">
+                  <div className="mb-2.5 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-3">
                       {heroHealth === "on_track" ? (
                         <Badge
@@ -751,7 +759,7 @@ export default function DashboardPage({
                     )}
                   </h1>
 
-                  <p className="text-muted-foreground mt-4 max-w-155 text-sm leading-relaxed xl:max-w-4xl">
+                  <p className="text-muted-foreground mt-2 max-w-155 text-sm leading-relaxed xl:max-w-4xl">
                     <Trans
                       t={t}
                       i18nKey={
@@ -830,9 +838,9 @@ export default function DashboardPage({
                   </p>
 
                   {/* Progress bar — portfolio vs. target with Coast FIRE marker */}
-                  <div className="mt-6">
-                    <div className="mb-2 flex items-end justify-between gap-3">
-                      <div className="flex flex-col gap-0.5">
+                  <div className="mt-4">
+                    <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                      <div className="flex items-baseline gap-2">
                         <span className="text-muted-foreground text-2xs tracking-wider uppercase">
                           {t("goals:dashboard.progress.portfolio_today")}
                         </span>
@@ -840,7 +848,7 @@ export default function DashboardPage({
                           {formatting.formatCompactAmount(portfolioNow, currency)}
                         </span>
                       </div>
-                      <div className="flex flex-col items-end gap-0.5">
+                      <div className="flex items-baseline gap-2">
                         <Tooltip>
                           <TooltipTrigger
                             render={
@@ -902,10 +910,7 @@ export default function DashboardPage({
                     <div className="text-muted-foreground text-2xs mt-1 flex justify-between">
                       <span className="tabular-nums">
                         {t("goals:dashboard.progress.funded_pct", {
-                          pct: numberFormatting.formatDecimal(progress * 100, {
-                            minimumFractionDigits: 1,
-                            maximumFractionDigits: 1,
-                          }),
+                          pct: numberFormatting.formatPercent(progress, { digits: 1 }),
                         })}
                       </span>
                       {!isTraditionalMode && (
@@ -1012,6 +1017,33 @@ export default function DashboardPage({
                           : t("goals:dashboard.chart.required_tip_fire")}
                       </TooltipContent>
                     </Tooltip>
+                    {goalMilestones.length > 0 && (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <button
+                              type="button"
+                              aria-pressed={showGoalMilestones}
+                              onClick={() => setShowGoalMilestones((shown) => !shown)}
+                              className={`flex items-center gap-1.5 underline decoration-dotted underline-offset-2 transition-opacity ${
+                                showGoalMilestones ? "" : "opacity-50"
+                              }`}
+                            />
+                          }
+                        >
+                          <span
+                            aria-hidden="true"
+                            className="block h-3 w-3 rounded-full border-[1.5px] border-dashed"
+                            style={{ borderColor: CHART_COLORS.muted }}
+                          />
+                          {t("goals:portfolio_chart.goal_milestones")}
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs text-xs">
+                          {t("goals:portfolio_chart.goal_milestones_tip")}{" "}
+                          {t("goals:portfolio_chart.goal_milestones_toggle")}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
                   </div>
                 </div>
               </CardHeader>
@@ -1024,6 +1056,8 @@ export default function DashboardPage({
                   valueMode={chartValueMode}
                   plannerMode={plannerMode}
                   projectedIsOnTrack={readiness.tone === "good"}
+                  goalMilestones={showGoalMilestones ? goalMilestones : []}
+                  onOpenGoal={onOpenGoal}
                 />
               </CardContent>
             </Card>
@@ -1225,9 +1259,7 @@ export default function DashboardPage({
                           }}
                           title={t("goals:dashboard.coverage.stream_title", {
                             label: s.label,
-                            pct: numberFormatting.formatDecimal(pct, {
-                              maximumFractionDigits: 0,
-                            }),
+                            pct: numberFormatting.formatPercent(pct / 100, { digits: 0 }),
                           })}
                         />
                       );
@@ -1237,8 +1269,8 @@ export default function DashboardPage({
                         className="bg-success h-full transition-[width] duration-500"
                         style={{ width: `${coveragePortfolioPct}%` }}
                         title={t("goals:dashboard.coverage.portfolio_withdrawal_title", {
-                          pct: numberFormatting.formatDecimal(coveragePortfolioPct, {
-                            maximumFractionDigits: 0,
+                          pct: numberFormatting.formatPercent(coveragePortfolioPct / 100, {
+                            digits: 0,
                           }),
                         })}
                       />
@@ -1248,8 +1280,8 @@ export default function DashboardPage({
                         className="bg-destructive/75 h-full transition-[width] duration-500"
                         style={{ width: `${coverageShortfallPct}%` }}
                         title={t("goals:dashboard.coverage.unfunded_title", {
-                          pct: numberFormatting.formatDecimal(coverageShortfallPct, {
-                            maximumFractionDigits: 0,
+                          pct: numberFormatting.formatPercent(coverageShortfallPct / 100, {
+                            digits: 0,
                           }),
                         })}
                       />
@@ -1263,8 +1295,8 @@ export default function DashboardPage({
                           style={{ background: COVERAGE_COLORS.income }}
                         />
                         {t("goals:dashboard.coverage.income_pct", {
-                          pct: numberFormatting.formatDecimal(coverageIncomePct, {
-                            maximumFractionDigits: 0,
+                          pct: numberFormatting.formatPercent(coverageIncomePct / 100, {
+                            digits: 0,
                           }),
                         })}
                       </span>
@@ -1273,8 +1305,8 @@ export default function DashboardPage({
                       <span className="flex items-center gap-1.5">
                         <span className="bg-success inline-block h-2 w-2 rounded-sm" />
                         {t("goals:dashboard.coverage.portfolio_pct", {
-                          pct: numberFormatting.formatDecimal(coveragePortfolioPct, {
-                            maximumFractionDigits: 0,
+                          pct: numberFormatting.formatPercent(coveragePortfolioPct / 100, {
+                            digits: 0,
                           }),
                         })}
                       </span>
@@ -1283,8 +1315,8 @@ export default function DashboardPage({
                       <span className="flex items-center gap-1.5">
                         <span className="bg-destructive/75 inline-block h-2 w-2 rounded-sm" />
                         {t("goals:dashboard.coverage.unfunded_pct", {
-                          pct: numberFormatting.formatDecimal(coverageShortfallPct, {
-                            maximumFractionDigits: 0,
+                          pct: numberFormatting.formatPercent(coverageShortfallPct / 100, {
+                            digits: 0,
                           }),
                         })}
                       </span>
@@ -1427,12 +1459,9 @@ export default function DashboardPage({
                                   {t("goals:dashboard.coverage.draw_on_portfolio")}{" "}
                                   <span className="text-foreground tabular-nums">
                                     {t("goals:dashboard.coverage.draw_rate_per_yr", {
-                                      pct: numberFormatting.formatDecimal(
-                                        coveragePortfolioDrawRate * 100,
-                                        {
-                                          minimumFractionDigits: 1,
-                                          maximumFractionDigits: 1,
-                                        },
+                                      pct: numberFormatting.formatPercent(
+                                        coveragePortfolioDrawRate,
+                                        { digits: 1 },
                                       ),
                                     })}
                                   </span>

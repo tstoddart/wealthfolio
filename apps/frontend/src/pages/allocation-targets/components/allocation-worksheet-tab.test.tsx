@@ -1,6 +1,10 @@
+import i18n from "i18next";
+import zhCommon from "@/i18n/locales/zh/common.json";
+import zhCommonTaxonomies from "@/i18n/locales/zh/taxonomies.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import { chartSliceColor } from "@wealthfolio/ui";
+import { chartSliceColor, FormattingProvider, stripBidiControls } from "@wealthfolio/ui";
+import { DirectionProvider } from "@wealthfolio/ui/components/ui/direction";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { toast } from "sonner";
@@ -67,7 +71,7 @@ vi.mock("../hooks/use-allocation-worksheet", () => ({
 }));
 vi.mock("@/adapters", () => ({
   getHoldingsList: vi.fn((filter: { accountId: string }) =>
-    Promise.resolve(holdingsFor(filter.accountId)),
+    Promise.resolve({ holdings: holdingsFor(filter.accountId), incompleteAccounts: [] }),
   ),
   getAssetTaxonomyAssignments: vi.fn(() => Promise.resolve([])),
   listTargetConstraints: vi.fn(() => Promise.resolve(constraintsRef.current)),
@@ -287,13 +291,19 @@ function previewLine(
 async function renderWorksheet(
   report: DriftReport = driftReport,
   target: AllocationTarget = profile,
+  locale = "US",
+  direction: "ltr" | "rtl" = "ltr",
 ) {
   const user = userEvent.setup();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const Providers = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
-      <MemoryRouter>{children}</MemoryRouter>
-    </QueryClientProvider>
+    <DirectionProvider direction={direction}>
+      <FormattingProvider locale={locale}>
+        <QueryClientProvider client={client}>
+          <MemoryRouter>{children}</MemoryRouter>
+        </QueryClientProvider>
+      </FormattingProvider>
+    </DirectionProvider>
   );
   render(
     <AllocationWorksheetTab
@@ -339,6 +349,135 @@ describe("AllocationWorksheetTab regeneration (§5)", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("does not calculate a worksheet from a partial valuation", async () => {
+    const priced = holdingsFor("acc-1")[0];
+    holdingsRef.current = {
+      "acc-1": [priced, { ...priced, id: "unpriced", marketValue: { local: null, base: null } }],
+    };
+    try {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <AllocationWorksheetTab
+              profile={profile}
+              driftReport={driftReport}
+              accountScope={{ type: "all" }}
+              sourceVersion="source-1"
+              isSourceLoading={false}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByRole("alert")).toHaveTextContent(/holdings are unavailable/i);
+      expect(generateMock).not.toHaveBeenCalled();
+      expect(previewMock).not.toHaveBeenCalled();
+    } finally {
+      holdingsRef.current = null;
+    }
+  });
+
+  it.each([
+    { locale: "US", direction: "ltr" as const, bps: 250, label: "2.5%" },
+    { locale: "ES", direction: "ltr" as const, bps: 250, label: "2,5 %" },
+    { locale: "ES", direction: "rtl" as const, bps: 250, label: "2,5 %" },
+    { locale: "US", direction: "ltr" as const, bps: 255, label: "2.55%" },
+    { locale: "ES", direction: "rtl" as const, bps: 255, label: "2,55 %" },
+    { locale: "US", direction: "ltr" as const, bps: 300, label: "3%" },
+  ])(
+    "shows the saved $bps-bps turnover cap in $locale $direction",
+    async ({ locale, direction, bps, label }) => {
+      await renderWorksheet(driftReport, { ...profile, maxTurnoverBps: bps }, locale, direction);
+      expect(
+        await screen.findByText((text) => stripBidiControls(text) === `Turnover cap ${label}`),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("updates worksheet category displays on language changes without rewriting domain names", async () => {
+    const categories = [
+      { categoryId: "EQUITY", categoryName: "Equity" },
+      { categoryId: "FIXED_INCOME", categoryName: "My bonds" },
+    ];
+    const report = {
+      ...driftReport,
+      rows: categories.map((category) => ({
+        ...category,
+        color: "",
+        currentBps: 4000,
+        targetBps: 5000,
+        driftBps: -1000,
+        currentValue: 400,
+        targetValue: 500,
+        valueDelta: -100,
+        effectiveBandBps: 500,
+        status: "in_band",
+        isRequired: false,
+        isZeroCurrent: false,
+        isCash: false,
+      })),
+      holdings: {
+        targetId: profile.id,
+        totalValue: 1000,
+        baseCurrency: "USD",
+        rows: categories.map((category) => ({
+          ...category,
+          id: category.categoryId,
+          holdingId: "vti",
+          assetId: "vti",
+          accountId: "acc-1",
+          symbol: "VTI",
+          name: "Total market",
+          value: 500,
+          currentPct: 50,
+          isUnknownCategory: false,
+          isCash: false,
+        })),
+      },
+    } as DriftReport;
+    previewMock.mockResolvedValue({
+      ...previewResult,
+      categories: report.rows.map((row) => ({
+        ...row,
+        projectedValue: row.currentValue,
+        projectedBps: row.currentBps,
+        currentDifferenceBps: row.driftBps,
+        projectedDifferenceBps: row.driftBps,
+        isUnclassified: false,
+      })),
+    });
+    const original = JSON.stringify(report);
+    i18n.addResourceBundle("zh", "common", zhCommon);
+    i18n.addResourceBundle("zh", "taxonomies", zhCommonTaxonomies);
+    const user = await renderWorksheet(report);
+    try {
+      expect(screen.getAllByText("Equity").length).toBeGreaterThan(0);
+      await act(() => i18n.changeLanguage("zh"));
+      expect(
+        screen.getAllByText(zhCommonTaxonomies.categoryNames.asset_classes.EQUITY).length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("My bonds").length).toBeGreaterThan(0);
+      expect(screen.queryByText("Equity")).not.toBeInTheDocument();
+      await goTo(user, "Adjust positions");
+      // The amount row's accessible class summary and the impact rail both update.
+      expect(
+        screen.getByText(
+          `${zhCommonTaxonomies.categoryNames.asset_classes.EQUITY} 50%, My bonds 50%`,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getAllByText(zhCommonTaxonomies.categoryNames.asset_classes.EQUITY).length,
+      ).toBeGreaterThan(0);
+      await act(() => i18n.changeLanguage("en"));
+      expect(screen.getByText("Equity 50%, My bonds 50%")).toBeInTheDocument();
+      expect(screen.getAllByText("My bonds").length).toBeGreaterThan(0);
+      expect(JSON.stringify(report)).toBe(original);
+    } finally {
+      await act(() => i18n.changeLanguage("en"));
+      i18n.removeResourceBundle("zh", "common");
+    }
   });
 
   it("states how amounts are split with the eligible securities rather than asking for it", async () => {
@@ -444,6 +583,8 @@ describe("AllocationWorksheetTab regeneration (§5)", () => {
     await waitFor(() =>
       expect(draftKeys()).toEqual([expect.stringMatching(/^profile:worksheet-test-profile:/)]),
     );
+    // The draft saves on a debounce; wait for the typed value, not just the key.
+    await waitFor(() => expect(localStorage.getItem(draftKeys()[0])).toContain('"500"'));
     cleanup();
 
     selectedProfileRef.current = "another-profile";
@@ -1778,6 +1919,75 @@ describe("AllocationWorksheetTab account allocation (§6)", () => {
     expect(totalOf(retirement)).toHaveTextContent("Total−$200.00$200.00 left");
   });
 
+  it.each(["ltr", "rtl"] as const)(
+    "opens review warnings with hover, touch, and keyboard in %s",
+    async (direction) => {
+      accountsRef.current = [account("acc-1", "Brokerage")];
+      const warning = (id: string, message: string) => ({
+        id,
+        kind: "stale_quote",
+        lineId: "l1",
+        message,
+        acknowledgementRequired: false,
+      });
+      previewMock.mockResolvedValue({
+        ...previewResult,
+        lines: [
+          previewLine({ lineId: "l1", estimatedAmount: 1000, quantity: 10 }),
+          previewLine({ lineId: "l2", assetId: "bnd", symbol: "BND", name: "Bonds" }),
+        ],
+        warnings: [
+          warning("w1", "VTI is priced from a dated quote."),
+          warning("w2", "VTI is converted at a dated rate."),
+        ],
+      } as unknown as AllocationWorksheetResult);
+      const user = await renderWorksheet(driftReport, profile, "US", direction);
+      await waitFor(() => expect(previewMock).toHaveBeenCalled(), { timeout: 2000 });
+
+      await goTo(user, "Review");
+
+      const trigger = await screen.findByRole("button", { name: "2 warnings" });
+      expect(trigger).not.toHaveAttribute("title");
+      // A line without warnings shows nothing in their place.
+      const review = trigger.closest<HTMLElement>("[data-review-account]")!;
+      expect(within(review).getAllByText(/warning/)).toHaveLength(1);
+      const expectDetails = async () => {
+        const dialog = await screen.findByRole("dialog", { name: "2 warnings" });
+        expect(within(dialog).getByText("VTI is priced from a dated quote.")).toBeVisible();
+        expect(within(dialog).getByText("VTI is converted at a dated rate.")).toBeVisible();
+      };
+      const expectClosed = () =>
+        waitFor(() =>
+          expect(screen.queryByRole("dialog", { name: "2 warnings" })).not.toBeInTheDocument(),
+        );
+
+      await user.hover(trigger);
+      await expectDetails();
+      await user.unhover(trigger);
+      await expectClosed();
+
+      await user.pointer({ keys: "[TouchA]", target: trigger });
+      await expectDetails();
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      await user.pointer({ keys: "[TouchA]", target: screen.getByText("VTI") });
+      await expectClosed();
+
+      // Tab from the units just before it, as a keyboard user would.
+      within(trigger.closest("li")!)
+        .getByRole("button", { name: (name) => stripBidiControls(name) === "≈ 10 units" })
+        .focus();
+      await user.tab();
+      expect(trigger).toHaveFocus();
+      for (const key of ["{Enter}", " "]) {
+        await user.keyboard(key);
+        await expectDetails();
+        await user.keyboard("{Escape}");
+        await expectClosed();
+        expect(trigger).toHaveFocus();
+      }
+    },
+  );
+
   it("tells apart accounts that share a name wherever the name stands alone", async () => {
     accountsRef.current = [
       { ...account("acc-1", "Individual"), accountNumber: "U1234001" },
@@ -2163,19 +2373,27 @@ describe("AllocationWorksheetTab Setup cash (§6)", () => {
 
     await goTo(user, "Setup");
     previewMock.mockClear();
-    previewMock.mockResolvedValue({
+    // Only a preview that selects Joint reads its cash, as the core does. A
+    // preview the edits before the tick still sent must not show it.
+    previewMock.mockImplementation(async (request) => ({
       ...twoAccounts,
-      recordedCashByAccount: { ...twoAccounts.recordedCashByAccount, "acc-3": 400 },
-    });
+      recordedCashByAccount: request.selectedAccountIds.includes("acc-3")
+        ? { ...twoAccounts.recordedCashByAccount, "acc-3": 400 }
+        : twoAccounts.recordedCashByAccount,
+    }));
     await user.click(screen.getByRole("checkbox", { name: /^Joint\b/ }));
 
     // The same preview, without lines or cash, reads what Joint records.
-    await waitFor(() => expect(fromAccount("Joint")).toHaveValue("400.00"), { timeout: 2000 });
-    expect(previewMock.mock.lastCall?.[0]).toMatchObject({
-      lines: [],
-      cash: { trackedCashToUse: 0, externalContribution: {} },
-      selectedAccountIds: ["acc-1", "acc-2", "acc-3"],
-    });
+    await waitFor(
+      () =>
+        expect(previewMock.mock.lastCall?.[0]).toMatchObject({
+          lines: [],
+          cash: { trackedCashToUse: 0, externalContribution: {} },
+          selectedAccountIds: ["acc-1", "acc-2", "acc-3"],
+        }),
+      { timeout: 2000 },
+    );
+    await waitFor(() => expect(fromAccount("Joint")).toHaveValue("400.00"));
   });
 });
 
@@ -2379,7 +2597,7 @@ describe("AllocationWorksheetTab Amounts panel", () => {
     expect(screen.getByRole("button", { name: "Previous: Setup" })).toBeInTheDocument();
   });
 
-  it("opens each step at its top, wherever the last one was left", async () => {
+  it("opens the worksheet and each step at its top, wherever the page was left", async () => {
     const startedAt: Element[] = [];
     const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (
       this: HTMLElement,
@@ -2398,13 +2616,14 @@ describe("AllocationWorksheetTab Amounts panel", () => {
     } as DOMRect);
     try {
       const user = await renderWorksheet(report);
-      expect(startedAt).toHaveLength(0);
+      // Opened from a page scrolled to its button (a phone's target details).
+      expect(startedAt).toHaveLength(1);
 
       await user.click(screen.getByRole("button", { name: "Enter adjustments yourself" }));
       await user.click(screen.getByRole("button", { name: "Next: Review" }));
 
-      expect(startedAt).toHaveLength(2);
-      expect(startedAt[1]).toContainElement(screen.getByRole("navigation"));
+      expect(startedAt).toHaveLength(3);
+      expect(startedAt[2]).toContainElement(screen.getByRole("navigation"));
     } finally {
       scroll.mockRestore();
       rect.mockRestore();

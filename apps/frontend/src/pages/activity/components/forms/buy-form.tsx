@@ -1,6 +1,7 @@
 import { useHoldings } from "@/hooks/use-holdings";
 import { useSettings } from "@/hooks/use-settings";
-import { ACTIVITY_SUBTYPES, ActivityType, QuoteMode } from "@/lib/constants";
+import { ACTIVITY_SUBTYPES, ActivityType, DECIMAL_PRECISION, QuoteMode } from "@/lib/constants";
+import { cryptoMoneyDecimals } from "@/lib/currency-decimals";
 import { buildOccSymbol, isValidOptionExpiration } from "@/lib/occ-symbol";
 import { normalizeCurrency } from "@/lib/utils";
 import { invalidTypeError, requiredError } from "@/lib/zod-errors";
@@ -20,6 +21,7 @@ import {
   AdvancedOptionsSection,
   AmountInput,
   AssetTypeSelector,
+  ChargeLinesField,
   createValidatedSubmit,
   DatePicker,
   FormSection,
@@ -33,6 +35,7 @@ import {
   type AccountSelectOption,
   type AssetType,
 } from "./fields";
+import { createChargeLineFields, createChargeLinesRefinement } from "./schemas";
 import { useTradeTotal } from "./use-trade-total";
 
 // Asset metadata schema for custom assets
@@ -160,7 +163,10 @@ export const createBuyFormSchema = (t?: TFunction) =>
           ),
         })
         .optional(),
+      // Fee and tax lines (metadata.charges)
+      ...createChargeLineFields(t),
     })
+    .superRefine(createChargeLinesRefinement(t))
     .superRefine((data, ctx) => {
       // Options build their symbol at submit time; stocks/bonds require it upfront
       if (data.assetType !== "option" && (!data.assetId || data.assetId.trim() === "")) {
@@ -293,8 +299,8 @@ export function BuyForm({
       quantity: undefined,
       unitPrice: undefined,
       amount: undefined,
-      fee: 0,
-      tax: 0,
+      fee: undefined,
+      tax: undefined,
       comment: null,
       subtype: null,
       fxRate: undefined,
@@ -372,6 +378,7 @@ export function BuyForm({
     tax: watch("tax"),
     isOption,
     contractMultiplier: optMultiplier,
+    currency,
   });
 
   const handleAssetTypeChange = (value: AssetType) => {
@@ -411,9 +418,10 @@ export function BuyForm({
     [accounts, accountId],
   );
   const accountCurrency = selectedAccount?.currency;
+  const moneyDecimals = cryptoMoneyDecimals(selectedAccount?.accountType, symbolInstrumentType);
   const assetCurrencyFromSymbol = normalizeCurrency(symbolQuoteCcy ?? undefined)?.toUpperCase();
 
-  const { holdings } = useHoldings({ type: "account", accountId });
+  const { holdings, isComplete: holdingsComplete } = useHoldings({ type: "account", accountId });
   const currentHoldingQuantity = useMemo(() => {
     if (!assetId || !holdings) return 0;
     const holding = holdings.find(
@@ -428,10 +436,17 @@ export function BuyForm({
     defaultValues?.subtype === ACTIVITY_SUBTYPES.POSITION_CLOSE;
   const showBuyToCover =
     isStock && (currentShortQuantity > 0 || isStockCover || isEditingCoverActivity);
-  const isCoverWithoutShort = !isEditing && isStockCover && !!assetId && currentShortQuantity === 0;
+  const isCoverWithoutShort =
+    holdingsComplete && !isEditing && isStockCover && !!assetId && currentShortQuantity === 0;
   const isBuyWhileShortWithoutCover =
-    !isEditing && isStock && !!assetId && currentShortQuantity > 0 && !isStockCover;
+    holdingsComplete &&
+    !isEditing &&
+    isStock &&
+    !!assetId &&
+    currentShortQuantity > 0 &&
+    !isStockCover;
   const isCoverQuantityExcess =
+    holdingsComplete &&
     !isEditing &&
     isStockCover &&
     !!assetId &&
@@ -583,11 +598,25 @@ export function BuyForm({
               name="unitPrice"
               label={priceLabel}
               data-testid="price-input"
-              maxDecimalPlaces={4}
+              maxDecimalPlaces={DECIMAL_PRECISION}
               currency={currency}
             />
-            <AmountInput name="fee" label={t("activity:form.label_fee")} currency={currency} />
-            <AmountInput name="tax" label={t("activity:form.label_tax")} currency={currency} />
+            <ChargeLinesField
+              totalName="fee"
+              linesName="feeLines"
+              category="fee"
+              label={t("activity:form.label_fee")}
+              currency={currency}
+              maxDecimalPlaces={moneyDecimals}
+            />
+            <ChargeLinesField
+              totalName="tax"
+              linesName="taxLines"
+              category="tax"
+              label={t("activity:form.label_tax")}
+              currency={currency}
+              maxDecimalPlaces={moneyDecimals}
+            />
           </div>
 
           <TradeTotalInput
@@ -596,6 +625,7 @@ export function BuyForm({
             isCustom={isCustomAmount}
             onCustomChange={onCustomChange}
             currency={currency}
+            maxDecimalPlaces={moneyDecimals}
           />
 
           {isBuyWhileShortWithoutCover && (

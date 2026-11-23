@@ -473,8 +473,8 @@ export function AlternativeAssetQuickAddModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-140"
-        mobileClassName="flex h-[90vh] flex-col"
+        className="flex flex-col gap-0 overflow-hidden p-0 [--overlay-max-height:90dvh] sm:max-w-140"
+        mobileClassName="flex flex-col"
       >
         {/* Header with progress indicator */}
         <DialogHeader className="shrink-0 border-b px-6 py-4">
@@ -511,7 +511,7 @@ export function AlternativeAssetQuickAddModal({
         </DialogHeader>
 
         {/* Content area with animations */}
-        <div className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className="relative min-h-0 flex-auto overflow-y-auto">
           <AnimatePresence mode="wait">
             {step === 1 ? (
               <motion.div
@@ -600,7 +600,7 @@ export function AlternativeAssetQuickAddModal({
                         onValueChange={(v) => updateFormData("metalType", v)}
                         options={METAL_TYPES.map((metal) => ({
                           value: metal.value,
-                          label: metal.label,
+                          label: t(`asset:altContent.metalType.${metal.value}`),
                         }))}
                         placeholder={t("asset:quickAdd.select_metal")}
                         sheetTitle={t("asset:quickAdd.select_metal_title")}
@@ -628,7 +628,7 @@ export function AlternativeAssetQuickAddModal({
                           onValueChange={(v) => updateFormData("unit", v)}
                           options={WEIGHT_UNITS.map((unit) => ({
                             value: unit.value,
-                            label: unit.label,
+                            label: t(`asset:altContent.weightUnit.${unit.value}`),
                           }))}
                           placeholder={t("asset:quickAdd.select_unit")}
                           sheetTitle={t("asset:quickAdd.select_unit_title")}
@@ -649,7 +649,7 @@ export function AlternativeAssetQuickAddModal({
                       onValueChange={(v) => updateFormData("liabilityType", v)}
                       options={LIABILITY_TYPES.map((type) => ({
                         value: type.value,
-                        label: type.label,
+                        label: t(`asset:altContent.liabilityType.${type.value}`),
                       }))}
                       placeholder={t("asset:quickAdd.select_type")}
                       sheetTitle={t("asset:quickAdd.select_liability_type_title")}
@@ -1012,7 +1012,7 @@ export function AlternativeAssetQuickAddModal({
         </div>
 
         {/* Footer with navigation */}
-        <div className="mt-auto shrink-0 border-t px-6 py-4">
+        <div className="shrink-0 border-t px-6 py-4">
           <div className="flex w-full gap-3">
             {step === 2 && allowKindChange && (
               <Button

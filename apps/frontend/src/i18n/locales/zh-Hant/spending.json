@@ -1,4 +1,21 @@
 {
+  "budgetGroupNames": {
+    "032ecb02-5912-42e8-9724-2cd566fc08d5": "必要支出",
+    "a409e0d6-9152-49c8-a5b4-a147a8ac636e": "非必要支出",
+    "1fb6f2a3-3245-4702-83e8-ab116458d13e": "儲蓄",
+    "8cbd26c8-e3b2-4176-8c61-e5c11e10b808": "捐贈",
+    "3ff71753-5dd5-4372-9ca2-63d8d9a04851": "個人",
+    "6e25d097-0c73-4521-9407-d47e8dfb73e2": "其他"
+  },
+  "eventTypeNames": {
+    "255600dc-c2a3-47e0-979d-a602c21fc337": "旅行",
+    "51e3eedb-5484-45ba-a525-6b88209c46ed": "假期",
+    "d9871ccb-5396-4c70-ac08-5b07ed90e64a": "商務",
+    "22442173-c794-45bf-97ee-9b3f9a7c8ba3": "教育",
+    "94fc13ed-ac40-466b-8071-64f1e3c72204": "醫療",
+    "1aaab8fb-8fd9-4543-bd46-d9ee4a5a8564": "特殊場合",
+    "fa4812ee-e06e-4117-a819-e4d88b7acbaf": "其他"
+  },
   "common": {
     "amount": "金額",
     "min": "最小",
@@ -54,16 +71,21 @@
     "clearCategory": "清除類別"
   },
   "activityTypes": {
-    "balanceTransferCashAdvance": "餘額轉移／預借現金",
+    "balanceTransferCashAdvance": "預借現金 / 餘額代償",
     "charge": "消費",
-    "interestCharge": "利息費用",
-    "refundCredit": "退款／回饋",
+    "interestCharge": "利息",
+    "refundCredit": "退款",
     "reimbursementRefund": "費用補償／退款"
   },
   "rules": {
     "editTitle": "編輯規則",
     "addTitle": "新增規則",
     "editDescription": "依名稱模式自動標記活動。多條規則同時符合時，會套用優先順序較高的規則。",
+    "categoryCompatibilityHint": "分類依據交易的現金流類型。儲蓄分類僅適用於已連結且轉出支出追蹤帳戶範圍的轉帳。",
+    "runIncompatible": "不相容的分類：{{count}}。分類依據交易的現金流類型。儲蓄分類僅適用於已連結且轉出支出追蹤帳戶範圍的轉帳。",
+    "runProtected": "保留現有分類或分攤：{{count}}。",
+    "runUnchanged": "已依要求分類：{{count}}。",
+    "runWithoutTarget": "無目標分類的符合項目：{{count}}。",
     "matchContains": "包含",
     "matchStartsWith": "開頭為",
     "matchExact": "完全符合",
@@ -166,12 +188,14 @@
     "unlinkTransfer": "取消連結轉帳",
     "linkTransfer": "連結轉帳……",
     "deleteConfirmMany_other": "確定要刪除 {{count}} 筆交易嗎？",
-    "deleteConfirmMany_one": "確定要刪除 {{count}} 筆交易嗎？"
+    "deleteConfirmMany_one": "確定要刪除 {{count}} 筆交易嗎？",
+    "convertToTransfer": "轉為轉帳..."
   },
   "cashFlow": {
     "income": "收入",
     "spending": "支出",
     "saving": "儲蓄",
+    "netSaved": "淨儲蓄",
     "net": "淨額"
   },
   "insights": {
@@ -228,6 +252,12 @@
     "selectedNet": "所選交易淨額"
   },
   "period": {
+    "month": "月",
+    "year": "年",
+    "previousPeriod": "上一個期間",
+    "nextPeriod": "下一個期間",
+    "previousYears": "更早年份",
+    "nextYears": "更晚年份",
     "thisMonth": "本月",
     "mtdShort": "MTD",
     "lastMonth": "上月",
@@ -726,8 +756,6 @@
     "overspentBy": "超支 {{pct}}",
     "noIncome": "此週期內所選帳戶沒有收入。",
     "spent": "已花費",
-    "saved": "已儲蓄",
-    "setAside": "預留",
     "sortSpent": "支出",
     "sortChange": "變化",
     "sortName": "名稱",
@@ -772,6 +800,8 @@
       "total": "總額",
       "shortfall": "缺口",
       "refunds": "淨退款",
+      "fromSavings": "來自儲蓄",
+      "toSavings": "轉入儲蓄",
       "surplus": "剩餘",
       "uncategorizedIncome": "未歸類收入",
       "netSpending": "淨支出"
@@ -782,6 +812,7 @@
       "shortfall": "超出流入的支出與儲蓄。",
       "refunds": "退款超過支出的類別。",
       "saved": "轉入儲蓄和投資帳戶的資金。",
+      "fromSavings": "從儲蓄和投資帳戶轉回的資金。",
       "surplus": "已流入但未支出或預留的資金。",
       "uncategorized": "尚未歸類的支出。",
       "net": "扣除退款後該類別的花費。",
@@ -827,6 +858,9 @@
     "manage": "管理 →"
   },
   "cashForm": {
+    "none": "無",
+    "addExpense": "新增支出",
+    "addIncome": "新增收入",
     "accountRequired": "請選取一個帳戶。",
     "pickDate": "選取日期",
     "amountNonNegative": "金額不能為負數。",
@@ -844,6 +878,8 @@
     "spendingCategory": "支出類別",
     "activityUpdated": "活動已更新。",
     "activityCreated": "活動已建立。",
+    "expenseAdded": "已新增支出。",
+    "incomeAdded": "已新增收入。",
     "saveFailed": "儲存活動失敗：{{message}}",
     "editTitle": "編輯交易",
     "addTitle": "新增交易",
@@ -851,7 +887,7 @@
     "addDescription": "在已追蹤支出的帳戶新增交易。",
     "selectAccount": "選取一個帳戶",
     "selectType": "選取交易類型",
-    "payment": "付款",
+    "payment": "繳款",
     "transfer": "轉帳",
     "payCardDesc": "從另一個帳戶償還此卡",
     "neutralTransfer": "中性轉帳",
@@ -862,7 +898,30 @@
     "notesPayee": "備註／收款方",
     "notesPlaceholder": "例如：AMAZON*MARKETPLACE、STARBUCKS COFFEE",
     "updateTransaction": "更新交易",
-    "createTransaction": "建立交易"
+    "createTransaction": "建立交易",
+    "typeChange": {
+      "transferOut": "計為轉出。在與另一個帳戶連結之前，報告仍將其計為支出。",
+      "transferIn": "計為轉入。在與另一個帳戶連結之前，報告仍將其計為收入。",
+      "cardPayment": "計為繳款：減少你的欠款，不算支出。",
+      "cardAdvance": "計為預借現金或餘額代償：增加你的欠款，但不算支出。",
+      "spending": "在報告中計為支出。",
+      "refund": "計為退款，會減少你的支出。",
+      "income": "在報告中計為收入。",
+      "none": "不再計入支出或收入。",
+      "reversesBalance": "餘額也會朝相反方向變動。",
+      "owesMore": "現在會增加你的欠款。",
+      "owesLess": "現在會減少你的欠款。"
+    },
+    "linkRow": {
+      "paidFrom": "付款帳戶",
+      "receivedFrom": "來源帳戶",
+      "sentTo": "轉入帳戶",
+      "untracked": "我未記錄的帳戶",
+      "suggested": "建議：{{account}} · {{date}} · {{amount}}",
+      "link": "連結",
+      "hint": "選擇另一個帳戶以連結兩邊，或保持不變。",
+      "savesFirst": "選擇帳戶會先儲存此變更，然後連結兩邊。"
+    }
   },
   "txTab": {
     "duplicatedComment": "已複製",
@@ -903,6 +962,11 @@
     "time": "時間"
   },
   "tabContent": {
+    "comparePriorPeriod": "與上一期間比較",
+    "comparisonDays": "期間內天數",
+    "comparisonWeeks": "期間內週數",
+    "comparisonMonths": "期間內月份",
+    "comparisonDifference": "差額",
     "stageWhereLabel": "我的現狀",
     "stageWhereSub": "進度、預算與類別明細",
     "stageChangedLabel": "發生了什麼變化",
@@ -910,7 +974,7 @@
     "stageWhenLabel": "何時與何地",
     "stageWhenSub": "何時消費與支出事件",
     "spendingAbovePrefix": "支出",
-    "pctAbove": "高出 {{pct}}%",
+    "pctAbove": "高出 {{pct}}",
     "thePriorPeriod": "較上一週期。",
     "moreThan": "比 {{prior}} 多 {{more}}",
     "uncategorizedCount_one": "{{count}} 筆未歸類交易",
@@ -946,12 +1010,11 @@
     "uncategorizedReview": "未歸類：請檢查",
     "uncategorizedImprove": "未歸類：檢查後可讓明細更清楚",
     "plusMore": "+ {{count}} 筆",
-    "down": "下降",
-    "up": "上升",
     "aboutSame": "與上一週期基本持平",
     "fromPriorPeriod": "較上一週期",
     "intervalMtd": "本月",
     "intervalLastMonth": "上月",
+    "interval1W": "過去7天",
     "interval3M": "過去 3 個月",
     "interval6M": "過去 6 個月",
     "intervalYtd": "年初至今",
@@ -976,9 +1039,15 @@
     "categoryCount_one": "{{count}} 個類別",
     "categoryCount_other": "{{count}} 個類別",
     "groupRollover": "群組結轉",
+    "removeGroupRollover": "移除結轉設定",
+    "removeGroupRolloverTitle": "移除{{name}}的結轉設定？",
+    "removeGroupRolloverDescription": "這將清除已儲存的期初餘額，並重新計算所有月份的結轉餘額。分類和預算目標將予以保留。",
     "on": "開啟",
     "off": "關閉",
     "deleteGroup": "刪除群組",
+    "deleteGroupDescription": "其類別和每月緩衝預算將移至所選群組。此操作無法復原。",
+    "deleteGroupRollover": "刪除此群組前，請先移除其結轉設定。",
+    "deleteGroupDestinationRollover": "移入預算前，請先停用目標群組的結轉。",
     "deleteGroupTitle": "刪除 {{name}}？",
     "deleteGroupWithCategories_one": "其中 {{count}} 個類別會移至另一個群組。此操作無法復原。",
     "deleteGroupWithCategories_other": "其中 {{count}} 個類別會移至另一個群組。此操作無法復原。",
@@ -1002,6 +1071,7 @@
     "revertOverride": "還原自訂設定",
     "monthOverrideRevert": "當月自訂設定 · 點選還原",
     "spentOf": "已花費，共",
+    "savedOf": "已儲蓄，共",
     "ofGroup": "（占群組的 {{pct}}）",
     "rowOptions": "列選項",
     "moveToGroup": "移至群組",
@@ -1032,9 +1102,16 @@
     "totals": "合計",
     "planned": "計畫",
     "actual": "實際",
+    "saved": "已儲蓄",
+    "savingsGoal": "儲蓄目標",
     "remaining": "剩餘",
     "unassigned": "未分配",
     "rolloverIn": "結轉流入",
+    "carriedIn": "已結轉",
+    "left": "剩餘",
+    "over": "超出",
+    "toGo": "待儲蓄",
+    "ahead": "超前",
     "dataUnavailable": "預算資料不可用",
     "migrationNeeded": "目前的本機資料庫建立於新版支出資料庫移轉之前。",
     "addSource_other": "新增來源（{{count}} 個可用）",
@@ -1049,5 +1126,17 @@
     "confirm": "儲存並刪除拆分",
     "removed_one": "此變更將刪除 {{count}} 個拆分配置。",
     "removed_other": "此變更將刪除 {{count}} 個拆分配置。"
+  },
+  "budgetErrors": {
+    "deleteGroup": "刪除預算群組失敗。",
+    "copyPlan": "複製計畫失敗。"
+  },
+  "grid": {
+    "transferInForm": "請透過「編輯」在轉帳表單中修改轉帳類型。",
+    "noCategory": "此活動既不屬於支出、收入，也不屬於儲蓄，因此沒有類別。",
+    "saveTypeFirst": "請先儲存新的類型或帳戶，再選擇類別。",
+    "saveCategoryFirst": "請先儲存類別，再修改類型或帳戶。",
+    "typeNotForAccount": "此帳戶不支援該類型。",
+    "amountRequired": "金額為必填欄位。"
   }
 }

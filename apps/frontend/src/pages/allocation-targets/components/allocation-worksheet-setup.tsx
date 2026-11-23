@@ -1,3 +1,4 @@
+import { useChangeArrow, worksheetCategoryLabel } from "./allocation-worksheet-labels";
 import {
   Card,
   Checkbox,
@@ -9,6 +10,7 @@ import {
 import { useCallback, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
+import { maskAccountNumber } from "@/lib/account-number";
 import { AccountType } from "@/lib/constants";
 import type { Account, AllocationTarget, DriftReport, WorksheetMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -139,6 +141,7 @@ export function WorksheetSetup(props: WorksheetSetupProps) {
       <aside aria-label={t("allocation:worksheet.summaryLabel")} className="min-w-0 space-y-4">
         <CashToDeploy {...props} />
         <GapToTarget
+          taxonomyId={props.profile.taxonomyId}
           report={props.driftReport}
           accountCount={props.accounts.length}
           currency={currency}
@@ -212,10 +215,9 @@ function accountDetails(
       other.name.trim().toLowerCase() === account.name.trim().toLowerCase() &&
       other.currency === account.currency,
   );
-  const number = account.accountNumber?.trim();
   return [
     account.currency,
-    twins.length > 0 && number ? `··${number.slice(-4)}` : null,
+    twins.length > 0 ? maskAccountNumber(account.accountNumber) : null,
     account.accountType === AccountType.CRYPTOCURRENCY ? notes.cryptoOnly : null,
     notes.neverReduced,
   ]
@@ -739,12 +741,14 @@ function AmountField({
  * is read. A category already in range steps back.
  */
 function GapToTarget({
+  taxonomyId,
   report,
   accountCount,
   currency,
   mode,
   reach,
 }: {
+  taxonomyId: string;
   report: DriftReport;
   accountCount: number;
   currency: string;
@@ -840,6 +844,7 @@ function GapToTarget({
       <ul className="mt-3 space-y-3">
         {ordered.map((row) => (
           <GapRow
+            taxonomyId={taxonomyId}
             key={row.categoryId}
             row={row}
             color={allocationTargetColorForRow(row, colors)}
@@ -879,18 +884,22 @@ interface GapNote {
 const barPercent = (bps: number) => Math.min(100, Math.max(0, bps / 100));
 
 function GapRow({
+  taxonomyId,
   row,
   color,
   currency,
   note,
 }: {
+  taxonomyId: string;
   row: DriftReport["rows"][number];
   color: string;
   currency: string;
   note: GapNote | null;
 }) {
+  const { t } = useTranslation();
   const { formatRoundedAmount } = useAmountFormatting();
   const { formatPercent } = useNumberFormatting();
+  const arrow = useChangeArrow();
   const isInRange = row.status === "in_band";
   const bandFrom = barPercent(row.targetBps - row.effectiveBandBps);
   const bandTo = barPercent(row.targetBps + row.effectiveBandBps);
@@ -903,9 +912,11 @@ function GapRow({
           className="h-2.5 w-2.5 shrink-0 self-center rounded-sm"
           style={{ background: color }}
         />
-        <span className="min-w-0 truncate">{row.categoryName}</span>
+        <span className="min-w-0 truncate">
+          {worksheetCategoryLabel(t, taxonomyId, row.categoryId, row.categoryName)}
+        </span>
         <span className="text-muted-foreground text-2xs shrink-0 font-mono tabular-nums">
-          {formatPercent(row.currentBps / 10_000, { digits: 1 })} →{" "}
+          {formatPercent(row.currentBps / 10_000, { digits: 1 })} {arrow}{" "}
           {formatPercent(row.targetBps / 10_000, { digits: 1 })}
         </span>
         {/* Signed the way it moves: + to add, − to reduce. */}
@@ -970,7 +981,7 @@ function CashToDeploy({
 }: WorksheetSetupProps) {
   const { t } = useTranslation();
   const { formatAmount, currencyFractionDigits } = useAmountFormatting();
-  const { decimalSeparator, groupSeparator } = useNumberFormatting();
+  const { decimalSeparator, groupSeparator, formatPercent } = useNumberFormatting();
   const fractionDigits = currencyFractionDigits(currency);
   const [isTyping, setIsTyping] = useState(false);
   const count = selectedAccountIds.length;
@@ -1022,7 +1033,7 @@ function CashToDeploy({
     </span>
   ) : cash.isKnown && share !== null && count > 0 && !isPresetShare ? (
     // A preset already says which share applies; a typed total says it here.
-    t("allocation:worksheet.cashShare", { percent: formatDecimalInput(share * 100, 1) })
+    t("allocation:worksheet.cashShare", { percent: formatPercent(share, { digits: 1 }) })
   ) : contributions > 0 ? (
     t("allocation:worksheet.cashPlusContribution", {
       amount: formatAmount(contributions, currency),
@@ -1061,7 +1072,9 @@ function CashToDeploy({
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {fraction === 1 ? t("allocation:worksheet.allCash") : `${fraction * 100}%`}
+                {fraction === 1
+                  ? t("allocation:worksheet.allCash")
+                  : formatPercent(fraction, { digits: 0 })}
               </button>
             );
           })}

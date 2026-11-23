@@ -1,5 +1,22 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
+import {
+  restoreSpendingSettings,
+  updateSettings,
+  useSpendingAccounts,
+  type Settings,
+  type SpendingSettings,
+} from "./api";
 import { BASE_URL } from "./helpers";
+
+// What each test changed, put back after it for the next spec on this worker.
+let previousSettings: Settings | undefined;
+let previousSpending: SpendingSettings | undefined;
+test.afterEach(async ({ page }) => {
+  if (previousSpending) await restoreSpendingSettings(page, previousSpending);
+  if (previousSettings) await updateSettings(page, previousSettings);
+  previousSpending = undefined;
+  previousSettings = undefined;
+});
 
 async function spendingSession(page: Page) {
   const state = await (
@@ -20,17 +37,15 @@ async function spendingSession(page: Page) {
     expect(response.ok(), `${path}: ${await response.text()}`).toBeTruthy();
     return response.json();
   };
-  await api(
-    "settings",
-    {
-      onboardingCompleted: true,
-      language: "en",
-      theme: "light",
-      syncEnabled: false,
-      autoUpdateCheckEnabled: false,
-    },
-    "PUT",
-  );
+  previousSettings = await updateSettings(page, {
+    baseCurrency: "USD",
+    timezone: "UTC",
+    onboardingCompleted: true,
+    language: "en",
+    theme: "light",
+    syncEnabled: false,
+    autoUpdateCheckEnabled: false,
+  });
   return api;
 }
 
@@ -49,7 +64,7 @@ for (const direction of ["ltr", "rtl"]) {
         isActive: true,
         trackingMode: "TRANSACTIONS",
       });
-      await api("spending/settings", { enabled: true, accountIds: [account.id] }, "PUT");
+      previousSpending = await useSpendingAccounts(page, [account.id]);
       const category = await api("taxonomies/categories", {
         taxonomyId: "spending_categories",
         name: `Review category ${editor} ${direction}`,
@@ -128,7 +143,7 @@ for (const direction of ["ltr", "rtl"]) {
       isActive: true,
       trackingMode: "TRANSACTIONS",
     });
-    await api("spending/settings", { enabled: true, accountIds: [account.id] }, "PUT");
+    previousSpending = await useSpendingAccounts(page, [account.id]);
     const category = await api("taxonomies/categories", {
       taxonomyId: "income_sources",
       name: `Old income ${direction}`,
@@ -190,7 +205,7 @@ for (const direction of ["ltr", "rtl"]) {
       isActive: true,
       trackingMode: "TRANSACTIONS",
     });
-    await api("spending/settings", { enabled: true, accountIds: [account.id] }, "PUT");
+    previousSpending = await useSpendingAccounts(page, [account.id]);
     const category = await api("taxonomies/categories", {
       taxonomyId: "income_sources",
       name: `Reimbursement income ${direction}`,

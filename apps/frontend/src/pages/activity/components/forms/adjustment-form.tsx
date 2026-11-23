@@ -1,5 +1,12 @@
 import { useSettings } from "@/hooks/use-settings";
-import { ACTIVITY_SUBTYPES, ActivityType, InstrumentType, QuoteMode } from "@/lib/constants";
+import {
+  ACTIVITY_SUBTYPES,
+  ActivityType,
+  DECIMAL_PRECISION,
+  InstrumentType,
+  QuoteMode,
+} from "@/lib/constants";
+import { cryptoMoneyDecimals } from "@/lib/currency-decimals";
 import { invalidTypeError, requiredError } from "@/lib/zod-errors";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { AnimatedToggleGroup } from "@wealthfolio/ui/components/ui/animated-toggle-group";
@@ -148,8 +155,8 @@ export const createAdjustmentFormSchema = (t?: TFunction) =>
             path: ["assetId"],
             message: msg(
               t,
-              "activity:form.err_option_type_required",
-              "An option asset is required.",
+              "activity:form.err_option_contract_required",
+              "Choose the option contract that expired, not its underlying stock.",
             ),
           });
         }
@@ -235,6 +242,7 @@ export function AdjustmentForm({
     [accounts, accountId],
   );
   const accountCurrency = selectedAccount?.currency;
+  const moneyDecimals = cryptoMoneyDecimals(selectedAccount?.accountType, symbolInstrumentType);
   const isCashMode = adjustmentMode === "cash";
   const subtypeOptions = useMemo(() => {
     const currentSubtype = subtype?.trim();
@@ -311,6 +319,7 @@ export function AdjustmentForm({
               name="amount"
               label={t("activity:form.label_amount")}
               currency={currency}
+              maxDecimalPlaces={moneyDecimals}
             />
           ) : (
             <>
@@ -336,13 +345,14 @@ export function AdjustmentForm({
                   name="unitPrice"
                   label={t("activity:form.label_price")}
                   currency={currency}
-                  maxDecimalPlaces={4}
+                  maxDecimalPlaces={DECIMAL_PRECISION}
                 />
               </div>
               <AmountInput
                 name="amount"
                 label={t("activity:form.label_amount")}
                 currency={currency}
+                maxDecimalPlaces={moneyDecimals}
               />
             </>
           )}

@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 
 import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
 import type { TaxonomyCategory } from "@/lib/types";
+import { getCategoryLabel } from "@/lib/taxonomy-labels";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -46,7 +47,6 @@ import { Card } from "@wealthfolio/ui/components/ui/card";
 const CARD_CLASS =
   "bg-linear-to-br from-white/[0.07] via-transparent to-black/[0.04] p-5 dark:from-white/[0.025] dark:to-black/[0.06]";
 const LABEL_CLASS = "text-muted-foreground/70 text-2xs font-semibold uppercase tracking-[0.12em]";
-const SAVINGS_GROUP_KEY = "savings";
 const SPENDING_TAXONOMY = "spending_categories";
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -700,7 +700,7 @@ function buildShareSegments(
   const sorted = positiveEntries
     .map(([id, e]) => ({
       id,
-      name: e.name,
+      name: getCategoryLabel(t, SPENDING_TAXONOMY, id, e.name),
       color: e.color ?? "#9CA3AF",
       amount: e.amount,
       share: (e.amount / positiveTotal) * 100,
@@ -740,7 +740,9 @@ const NetCashflowCard: FC<NetCashflowCardProps> = ({ months, currency, isLoading
     for (const m of months) {
       income += m.report?.current.income ?? 0;
       spent += m.report?.current.outflow ?? 0;
-      saved += m.report?.current.saved ?? 0;
+      // Net saving: money brought back from savings offsets what went in. A
+      // negative net hides the bar, and Net carries the difference.
+      saved += (m.report?.current.saved ?? 0) - (m.report?.current.fromSavings ?? 0);
     }
     const net = income - spent - saved;
     const surplusRate = income > 0 ? net / income : 0;
@@ -810,7 +812,7 @@ const NetCashflowCard: FC<NetCashflowCardProps> = ({ months, currency, isLoading
 
       <div className="mt-4 space-y-2">
         <div className="text-2xs flex items-center gap-2">
-          <span className="text-muted-foreground w-12 shrink-0">
+          <span className="text-muted-foreground w-16 shrink-0">
             {t("spending:cashFlow.income")}
           </span>
           <div className="bg-foreground/5 h-1.5 flex-1 overflow-hidden rounded-full">
@@ -829,7 +831,7 @@ const NetCashflowCard: FC<NetCashflowCardProps> = ({ months, currency, isLoading
           </p>
         )}
         <div className="text-2xs flex items-center gap-2">
-          <span className="text-muted-foreground w-12 shrink-0">
+          <span className="text-muted-foreground w-16 shrink-0">
             {t("spending:whereIAm.spent")}
           </span>
           <div className="bg-foreground/5 h-1.5 flex-1 overflow-hidden rounded-full">
@@ -844,8 +846,8 @@ const NetCashflowCard: FC<NetCashflowCardProps> = ({ months, currency, isLoading
         </div>
         {totals.saved > 0 && (
           <div className="text-2xs flex items-center gap-2">
-            <span className="text-muted-foreground w-12 shrink-0">
-              {t("spending:whereIAm.saved")}
+            <span className="text-muted-foreground w-16 shrink-0">
+              {t("spending:cashFlow.netSaved")}
             </span>
             <div className="bg-foreground/5 h-1.5 flex-1 overflow-hidden rounded-full">
               <div
@@ -906,10 +908,8 @@ function BreakdownCanvas({
 
   // Memoize these so downstream `counts`/`filteredBreakdown` memos stay valid
   // — otherwise a fresh array on every render busts memoization.
-  const groupRows = useMemo(
-    () => budget?.computed.groupRows.filter((row) => row.group.key !== SAVINGS_GROUP_KEY) ?? [],
-    [budget],
-  );
+  // The insight lists only groups that hold spending, whatever their name.
+  const groupRows = useMemo(() => budget?.computed.groupRows ?? [], [budget]);
   const budgetRows = useMemo(() => groupRows.flatMap((row) => row.categories), [groupRows]);
   const breakdown = useMemo(
     () =>
@@ -1015,7 +1015,7 @@ function BreakdownCanvas({
 
       <div
         data-no-swipe-drag
-        className="-mx-2 mb-3 flex touch-pan-x gap-2 overflow-x-auto overscroll-x-contain px-2 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0 md:pb-0 [&::-webkit-scrollbar]:hidden"
+        className="scrollbar-hide -mx-2 mb-3 flex touch-pan-x gap-2 overflow-x-auto overscroll-x-contain px-2 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0 md:pb-0"
       >
         {filterChips.map((chip) => {
           const active = filter === chip.id;
@@ -1117,8 +1117,8 @@ function BreakdownCanvas({
  * toward the subcategory above it, since the table has two levels.
  *
  * Only categories the top-level rows list are kept: those leave out one whose
- * spending netted to exactly zero (a float sum here can miss that) and any in
- * the savings group.
+ * spending netted to exactly zero (a float sum here can miss that) and any
+ * excluded one.
  *
  * `null` while a category isn't in the taxonomy yet (still loading): its row
  * couldn't be placed under its parent, so the top-level rows stand in.

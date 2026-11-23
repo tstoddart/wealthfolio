@@ -1,6 +1,8 @@
+import { useTranslation } from "react-i18next";
 import {
   ColumnDef,
   ColumnFiltersState,
+  ColumnOrderState,
   SortingState,
   VisibilityState,
   flexRender,
@@ -21,6 +23,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { usePersistentState } from "../../../hooks/use-persistent-state";
 
 import type { DataTableFacetedFilterProps } from "./data-table-faceted-filter";
+import { mergeColumnOrder } from "./column-order";
 import { DataTableToolbar } from "./data-table-toolbar";
 
 export { DataTableColumnHeader } from "./data-table-column-header";
@@ -40,6 +43,11 @@ interface DataTableProps<TData, TValue> {
   manualPagination?: boolean;
   scrollable?: boolean;
   showColumnToggle?: boolean;
+  /**
+   * Let the column menu move columns. The first column stays first. The order is saved
+   * under storageKey when one is given.
+   */
+  enableColumnReordering?: boolean;
   toolbarView?: React.ReactNode;
   toolbarFilters?: React.ReactNode;
   toolbarActions?: React.ReactNode;
@@ -49,21 +57,26 @@ interface DataTableProps<TData, TValue> {
 }
 
 /**
- * Ids of the columns tanstack would let you sort, resolved the same way it resolves them
- * when it builds the table: `id ?? accessorKey.replaceAll(".", "_") ?? string header`,
- * sortable only when the column has an accessor and sorting is not disabled. Group defs
- * carry no accessor, so we descend into their children instead.
+ * Ids of the leaf columns, or with `sortableOnly` of those tanstack would let you sort,
+ * resolved the same way it resolves them when it builds the table:
+ * `id ?? accessorKey.replaceAll(".", "_") ?? string header`, sortable only when the
+ * column has an accessor and sorting is not disabled. Group defs carry no accessor, so we
+ * descend into their children instead.
  */
-function collectSortableColumnIds<TData, TValue>(columns: ColumnDef<TData, TValue>[], ids: string[] = []): string[] {
+function collectLeafColumnIds<TData, TValue>(
+  columns: ColumnDef<TData, TValue>[],
+  sortableOnly: boolean,
+  ids: string[] = [],
+): string[] {
   for (const column of columns) {
     const children = "columns" in column ? column.columns : undefined;
     if (children?.length) {
-      collectSortableColumnIds(children, ids);
+      collectLeafColumnIds(children, sortableOnly, ids);
       continue;
     }
-    if (column.enableSorting === false) continue;
     const accessorKey = "accessorKey" in column ? String(column.accessorKey) : undefined;
-    if (!("accessorFn" in column) && accessorKey === undefined) continue;
+    if (sortableOnly && column.enableSorting === false) continue;
+    if (sortableOnly && !("accessorFn" in column) && accessorKey === undefined) continue;
     const id =
       column.id ?? accessorKey?.replaceAll(".", "_") ?? (typeof column.header === "string" ? column.header : undefined);
     if (id) ids.push(id);
@@ -84,12 +97,14 @@ export function DataTable<TData, TValue>({
   fallbackStorageKey,
   scrollable = false,
   showColumnToggle = false,
+  enableColumnReordering = false,
   toolbarView,
   toolbarFilters,
   toolbarActions,
   pinRowsToTop,
   card = true,
 }: DataTableProps<TData, TValue>) {
+  const { t } = useTranslation();
   const Frame = card ? Card : "div";
   const [rowSelection, setRowSelection] = React.useState({});
   const [storedColumnVisibility, setColumnVisibility] = storageKey
@@ -118,10 +133,23 @@ export function DataTable<TData, TValue>({
       )
     : React.useState<SortingState>(defaultSorting || []);
 
+  const [columnOrder, setColumnOrder] = storageKey
+    ? usePersistentState<ColumnOrderState>(
+        `${storageKey}:column-order`,
+        [],
+        fallbackStorageKey ? `${fallbackStorageKey}:column-order` : undefined,
+      )
+    : React.useState<ColumnOrderState>([]);
+  const leafColumnIdsKey = collectLeafColumnIds(columns, false).join("\0");
+  const effectiveColumnOrder = React.useMemo(
+    () => (enableColumnReordering ? mergeColumnOrder(leafColumnIdsKey.split("\0").filter(Boolean), columnOrder) : []),
+    [columnOrder, enableColumnReordering, leafColumnIdsKey],
+  );
+
   // Views sharing one storageKey can render different column sets, so a stored sort
   // may reference a column that is absent right now. Fall back for this render only —
   // rewriting the stored value would discard the choice the user made in the other view.
-  const sortableColumnIdsKey = collectSortableColumnIds(columns).join("\0");
+  const sortableColumnIdsKey = collectLeafColumnIds(columns, true).join("\0");
   // Serialised so the memo below stays stable: callers pass defaultSorting as a literal.
   const defaultSortingKey = JSON.stringify(defaultSorting ?? []);
 
@@ -141,6 +169,7 @@ export function DataTable<TData, TValue>({
     state: {
       sorting,
       columnVisibility,
+      columnOrder: effectiveColumnOrder,
       rowSelection,
       columnFilters,
       pagination: manualPagination
@@ -158,6 +187,7 @@ export function DataTable<TData, TValue>({
     onSortingChange: (updater) => setSorting(typeof updater === "function" ? updater(sorting) : updater),
     onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: setColumnVisibility,
+    onColumnOrderChange: setColumnOrder,
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
@@ -181,6 +211,8 @@ export function DataTable<TData, TValue>({
           viewControl={toolbarView}
           additionalFilters={toolbarFilters}
           showColumnToggle={showColumnToggle}
+          enableColumnReordering={enableColumnReordering}
+          hasCustomColumnOrder={columnOrder.length > 0}
           actions={toolbarActions}
         />
       </div>
@@ -244,7 +276,7 @@ export function DataTable<TData, TValue>({
                 <TableCell colSpan={columns.length} className="h-24 text-center">
                   <div className="flex flex-col items-center justify-center">
                     <Icons.FileText className="text-muted-foreground mb-2 h-10 w-10" />
-                    <p className="text-muted-foreground text-sm">No results found.</p>
+                    <p className="text-muted-foreground text-sm">{t("common:no_results_found", "No results found.")}</p>
                   </div>
                 </TableCell>
               </TableRow>

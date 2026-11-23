@@ -103,10 +103,14 @@ export {
   getImportTemplate,
   getBrokerSyncProfile,
   findTransferMatchCandidates,
+  convertToInternalTransfer,
+  reviewConvertToTransferSplitEffects,
   getTransferPairForActivity,
   getAccountImportMapping,
   linkAccountTemplate,
   linkTransferActivities,
+  linkTransferPairs,
+  reviewTransferMatches,
   unlinkTransferActivities,
   getActivities,
   importActivities,
@@ -186,6 +190,7 @@ export {
   checkHoldingsImport,
   deleteSnapshot,
   getAssetHoldings,
+  getAssetHoldingsScope,
   getAssetLots,
   getHistoricalValuations,
   getHolding,
@@ -248,6 +253,8 @@ export {
   deleteContributionLimit,
   getContributionLimit,
   updateContributionLimit,
+  getContributionLimitDetails,
+  setContributionActivityExcluded,
 } from "../shared/contribution-limits";
 
 // Exchange Rates Commands
@@ -267,6 +274,7 @@ export {
   isSpendingEnabled,
   listCategorizationRules,
   rerunCategorizationRules,
+  rerunCategorizationRulesDetailed,
   SPEND_CATEGORY_KIND_TO_TAXONOMY_ID,
   TAXONOMY_ID_TO_SPEND_CATEGORY_KIND,
   updateCategorizationRule,
@@ -405,6 +413,7 @@ export {
 
 // Data Export Commands
 export { exportDataFile } from "./exports";
+export { getDataExportSummary } from "../shared/exports";
 
 // ============================================================================
 // Platform-specific modules (different implementations for web vs desktop)
@@ -449,6 +458,7 @@ export {
   listenMarketSyncStart,
   listenNavigateToRoute,
   listenPortfolioUpdateComplete,
+  listenGoalSummariesUpdated,
   listenPortfolioUpdateError,
   listenPortfolioUpdateStart,
 } from "./events";

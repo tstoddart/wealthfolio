@@ -1,9 +1,12 @@
+import { isValuationComplete } from "@/lib/valuation";
+import { useTranslation } from "react-i18next";
 import { formatZonedDateKey } from "@/features/spending/lib/timezone";
 import { calculatePerformanceSummary } from "@/adapters";
 import { HistoryChart } from "@/components/history-chart";
 import { useHapticFeedback } from "@/hooks";
 import { useCurrentValuation } from "@/hooks/use-current-account-valuations";
 import { useHoldings } from "@/hooks/use-holdings";
+import { HoldingsScopeNotice } from "@/components/holdings-scope-notice";
 import { useValuationHistory } from "@/hooks/use-valuation-history";
 import { HoldingType, isAlternativeAssetKind } from "@/lib/constants";
 import { performancePeriodPnl, performanceSummaryReturn } from "@/lib/performance";
@@ -14,9 +17,11 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type { TimePeriod as UITimePeriod } from "@wealthfolio/ui";
 import { GainAmount, GainPercent, IntervalSelector } from "@wealthfolio/ui";
 import { SpendingDatePicker } from "@/features/spending/components/spending-date-picker";
+import { PeriodNavigation } from "@/features/spending/components/period-navigation";
 import { Skeleton } from "@wealthfolio/ui/components/ui/skeleton";
 import { format } from "date-fns";
 import { useMemo } from "react";
+import { HealthStatusIndicator } from "@/components/health-status-icon";
 import { PrivacyToggle } from "@/components/privacy-toggle";
 import { PerformanceMethodBadge } from "@/components/performance-method-badge";
 import { cn } from "@/lib/utils";
@@ -81,13 +86,15 @@ export function DashboardContent({
   scopeLabel,
   accountIds,
 }: DashboardContentProps) {
+  const { t } = useTranslation();
   const { settings } = useSettingsContext();
   const todayISO = formatZonedDateKey(new Date(), settings?.timezone);
   const period = useDashboardPeriod(todayISO);
   const { code: selectedInterval, range: dateRange } = period;
   const isAllTime = selectedInterval === "ALL";
 
-  const { holdings: allHoldings, isLoading: isHoldingsLoading } = useHoldings(scope);
+  const holdingsQuery = useHoldings(scope);
+  const { holdings: allHoldings, isLoading: isHoldingsLoading } = holdingsQuery;
   const {
     currentValuation: portfolioCurrentValuation,
     isLoading: isCurrentValuationLoading,
@@ -144,10 +151,18 @@ export function DashboardContent({
     retry: 1,
   });
 
-  const gainLossAmount = performancePeriodPnl(portfolioPerformance);
-  const simpleReturn = performanceSummaryReturn(portfolioPerformance);
+  const hasIncompleteHistory =
+    valuationHistory?.some((point) => !isValuationComplete(point.valueStatus)) ?? false;
+  const hasIncompletePeriod =
+    ((endDate === undefined || endDate >= todayISO) &&
+      !isValuationComplete(portfolioCurrentValuation?.summary.valueStatus)) ||
+    hasIncompleteHistory;
+  const gainLossAmount = hasIncompletePeriod ? null : performancePeriodPnl(portfolioPerformance);
+  const simpleReturn = hasIncompletePeriod ? null : performanceSummaryReturn(portfolioPerformance);
   const isCurrentValuationUnavailable =
-    !isCurrentValuationLoading && !portfolioCurrentValuation && Boolean(currentValuationError);
+    !isCurrentValuationLoading &&
+    (!isValuationComplete(portfolioCurrentValuation?.summary.valueStatus) ||
+      (!portfolioCurrentValuation && Boolean(currentValuationError)));
   const portfolioSourceDataAsOf =
     portfolioCurrentValuation?.summary.sourceDataAsOf ??
     (!isCurrentValuationUnavailable
@@ -159,8 +174,8 @@ export function DashboardContent({
       valuationHistory
         // A day the engine could not fully convert carries a partial value;
         // it is not plotted rather than drawn as if it were complete.
-        ?.filter((item) => item.valueStatus !== "unavailable")
-        .map((item) => ({
+        ?.map((item) => ({
+          isUnavailable: !isValuationComplete(item.valueStatus),
           date: item.valuationDate,
           totalValue: item.totalValueBase,
           netContribution: item.netContributionBase,
@@ -182,14 +197,31 @@ export function DashboardContent({
 
   return (
     <div className="flex min-h-full flex-col">
-      <div className="px-4 pt-2 pb-1 md:px-6 lg:px-8">
+      <div className="px-4 pt-2 pb-6 md:px-6 md:pb-2 lg:px-8">
         <div className="min-w-0">
           {scope.type === "portfolio" && scopeLabel && (
             <p className="text-muted-foreground mb-1 truncate text-xs" title={scopeLabel}>
               {scopeLabel}
             </p>
           )}
+          <div
+            className="flex max-w-full flex-wrap items-center gap-x-1"
+            data-testid="dashboard-period-header"
+          >
+            <div
+              className="text-muted-foreground/80 text-2xs font-semibold tracking-[0.12em] uppercase"
+              data-testid="dashboard-period-caption"
+            >
+              {t("dashboard:tabs.investments")} · {period.label}
+            </div>
+            <PeriodNavigation navigation={period.navigation} />
+          </div>
           <div className="flex flex-wrap items-center gap-2">
+            {period.isHistorical && (
+              <span className="text-muted-foreground w-full text-xs">
+                {t("common:currentValue")}
+              </span>
+            )}
             <PortfolioUpdateTrigger
               lastCalculatedAt={portfolioSourceDataAsOf}
               notices={portfolioCurrentValuation?.summary.warnings}
@@ -202,7 +234,8 @@ export function DashboardContent({
                 displayCurrency={true}
               />
             </PortfolioUpdateTrigger>
-            <PrivacyToggle className="hover:bg-muted/50 bg-transparent" />
+            <PrivacyToggle variant="ghost" />
+            <HealthStatusIndicator />
           </div>
           <div className="text-md flex min-h-5 flex-wrap items-center gap-x-3">
             {isPortfolioPerformanceLoading ? (
@@ -219,7 +252,9 @@ export function DashboardContent({
                 )}
               >
                 {gainLossAmount == null ? (
-                  <span className="text-muted-foreground lg:text-md text-sm font-light">N/A</span>
+                  <span className="text-muted-foreground lg:text-md text-sm font-light">
+                    {t("performance:not_available")}
+                  </span>
                 ) : (
                   <GainAmount
                     className="lg:text-md text-sm font-light"
@@ -228,9 +263,12 @@ export function DashboardContent({
                     displayCurrency={false}
                   />
                 )}
-                <div className="border-secondary my-1 border-e pe-2" />
+                {/* Stretch: the row centres its items, so an empty divider has no height. */}
+                <div className="border-secondary my-1 self-stretch border-e pe-2" />
                 {simpleReturn == null ? (
-                  <span className="text-muted-foreground lg:text-md text-sm font-light">N/A</span>
+                  <span className="text-muted-foreground lg:text-md text-sm font-light">
+                    {t("performance:not_available")}
+                  </span>
                 ) : (
                   <div className="flex items-center gap-1.5">
                     <GainPercent
@@ -246,9 +284,11 @@ export function DashboardContent({
                 )}
               </div>
             )}
-            <span className="lg:text-md text-muted-foreground ms-1 text-sm font-light">
-              {period.label}
-            </span>
+            {period.isHistorical && (
+              <span className="text-muted-foreground text-sm font-light">
+                {t("common:periodReturn", { period: period.label })}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -257,8 +297,8 @@ export function DashboardContent({
         className="flex grow flex-col"
         style={{
           backgroundImage: isNegative
-            ? `linear-gradient(to top, color-mix(in srgb, var(--destructive) 30%, transparent), color-mix(in srgb, var(--destructive) 15%, transparent) 50%, transparent 100%)`
-            : `linear-gradient(to top, color-mix(in srgb, var(--success) 30%, transparent), color-mix(in srgb, var(--success) 15%, transparent) 50%, transparent 100%)`,
+            ? `linear-gradient(to top, color-mix(in srgb, var(--loss) 30%, transparent), color-mix(in srgb, var(--loss) 15%, transparent) 50%, transparent 100%)`
+            : `linear-gradient(to top, color-mix(in srgb, var(--investments) 30%, transparent), color-mix(in srgb, var(--investments) 15%, transparent) 50%, transparent 100%)`,
         }}
       >
         <div className="h-70">
@@ -268,6 +308,7 @@ export function DashboardContent({
             scaleMode="fit-visible"
             minDomainSpanRatio={chartMinDomainSpanRatio}
             netContributionMaxDomainSpanRatio={chartNetContributionMaxDomainSpanRatio}
+            color="var(--investments)"
           />
           {valuationHistory && chartData.length > 0 && (
             <div className="flex w-full justify-center">
@@ -277,11 +318,17 @@ export function DashboardContent({
                   onIntervalSelect={period.selectPreset}
                   onHaptic={triggerHaptic}
                   isLoading={isValuationHistoryLoading}
-                  value={selectedInterval}
+                  value={period.selectedPreset}
                 />
                 <SpendingDatePicker
                   customMonth={period.customMonth}
                   customRange={period.customRange}
+                  customYear={period.customYear}
+                  maxYear={period.maxYear}
+                  onCustomYearChange={period.selectYear}
+                  selectionLabel={
+                    period.customMonth || period.customYear !== null ? period.label : undefined
+                  }
                   maxMonth={period.maxMonth}
                   onCustomMonthChange={period.selectMonth}
                   onCustomRangeChange={period.selectRange}
@@ -305,11 +352,14 @@ export function DashboardContent({
               />
             </div>
             <div className="space-y-6">
-              <TopHoldings
-                holdings={holdings}
-                isLoading={isHoldingsLoading}
-                baseCurrency={baseCurrency}
-              />
+              <HoldingsScopeNotice {...holdingsQuery} />
+              {(holdingsQuery.isComplete || isHoldingsLoading) && (
+                <TopHoldings
+                  holdings={holdings}
+                  isLoading={isHoldingsLoading}
+                  baseCurrency={baseCurrency}
+                />
+              )}
               <SavingGoals />
             </div>
           </div>

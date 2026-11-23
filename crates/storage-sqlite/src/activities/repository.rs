@@ -49,11 +49,111 @@ use async_trait::async_trait;
 use diesel::dsl::{max, min, sql};
 use num_traits::Zero;
 use sha2::{Digest, Sha256};
+use wealthfolio_spending::cash_activities::model::CashFlowBucket;
 
 /// Repository for managing activity data in the database
 pub struct ActivityRepository {
     pool: Arc<Pool<ConnectionManager<SqliteConnection>>>,
     writer: WriteHandle,
+}
+
+/// Shared physical deletion and outbox policy. Reviewed callers must name every
+/// row the existing source-group cascade would remove; validate before any write.
+fn delete_activity_rows_tx(
+    tx: &mut crate::db::write_actor::DbWriteTx<'_>,
+    delete_ids: &[String],
+    checked: bool,
+) -> Result<Vec<Activity>> {
+    if checked {
+        let expected: HashSet<&str> = delete_ids.iter().map(String::as_str).collect();
+        if expected.is_empty() || expected.len() != delete_ids.len() {
+            return Err(ActivityError::InvalidData(
+                "Deletion requires distinct activity ids".into(),
+            )
+            .into());
+        }
+        let rows = activities::table
+            .filter(activities::id.eq_any(delete_ids))
+            .select(ActivityDB::as_select())
+            .load::<ActivityDB>(tx.conn())
+            .map_err(StorageError::from)?;
+        if rows.len() != expected.len() {
+            return Err(ActivityError::InvalidData(
+                "Activity changed; prepare deletion again".into(),
+            )
+            .into());
+        }
+        let groups: HashSet<&str> = rows
+            .iter()
+            .filter_map(|row| row.source_group_id.as_deref())
+            .collect();
+        let grouped_ids = activities::table
+            .filter(activities::source_group_id.eq_any(groups))
+            .select(activities::id)
+            .load::<String>(tx.conn())
+            .map_err(StorageError::from)?;
+        if grouped_ids.iter().any(|id| !expected.contains(id.as_str())) {
+            return Err(ActivityError::InvalidData(
+                "Activity group contains unreviewed rows; prepare deletion again or void the activity instead"
+                    .into(),
+            )
+            .into());
+        }
+    }
+    let mut deleted = Vec::new();
+    let delete_id_set: std::collections::HashSet<&str> =
+        delete_ids.iter().map(|s| s.as_str()).collect();
+    let mut already_deleted: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for delete_id in delete_ids {
+        if already_deleted.contains(delete_id) {
+            continue;
+        }
+        let activity_db = activities::table
+            .select(ActivityDB::as_select())
+            .find(delete_id)
+            .first::<ActivityDB>(tx.conn())
+            .map_err(StorageError::from)?;
+        if let Some(ref group_id) = activity_db.source_group_id.clone() {
+            let counterpart_ids: Vec<String> = activities::table
+                .filter(activities::source_group_id.eq(group_id))
+                .filter(activities::id.ne(delete_id))
+                .select(activities::id)
+                .load::<String>(tx.conn())
+                .map_err(StorageError::from)?;
+            for cid in counterpart_ids {
+                if already_deleted.contains(&cid) {
+                    continue;
+                }
+                if delete_id_set.contains(cid.as_str()) {
+                    // Explicitly in delete list — main loop will handle it
+                    continue;
+                }
+                let cp_db = activities::table
+                    .select(ActivityDB::as_select())
+                    .find(&cid)
+                    .first::<ActivityDB>(tx.conn())
+                    .map_err(StorageError::from)?;
+                diesel::delete(activities::table.filter(activities::id.eq(&cid)))
+                    .execute(tx.conn())
+                    .map_err(StorageError::from)?;
+                if should_sync_raw_activity_outbox(&cp_db) {
+                    tx.delete::<ActivityDB>(cid.clone());
+                }
+                deleted.push(Activity::from(cp_db));
+                already_deleted.insert(cid);
+            }
+        }
+        diesel::delete(activities::table.filter(activities::id.eq(delete_id)))
+            .execute(tx.conn())
+            .map_err(StorageError::from)?;
+        if should_sync_raw_activity_outbox(&activity_db) {
+            tx.delete::<ActivityDB>(delete_id.clone());
+        }
+        deleted.push(Activity::from(activity_db));
+        already_deleted.insert(delete_id.clone());
+    }
+    Ok(deleted)
 }
 
 fn apply_decimal_patch(existing: Option<String>, patch: Option<Option<Decimal>>) -> Option<String> {
@@ -179,6 +279,20 @@ fn project_activity_update(
     existing: &ActivityDB,
     update: &ActivityUpdate,
 ) -> Result<ActivityDB> {
+    let existing_type = effective_activity_type(existing);
+    let was_transfer = matches!(
+        existing_type,
+        ACTIVITY_TYPE_TRANSFER_IN | ACTIVITY_TYPE_TRANSFER_OUT
+    );
+    if was_transfer
+        && update.activity_type != existing_type
+        && source_group_blocks_transfer_link(conn, existing.source_group_id.as_deref())?
+    {
+        return Err(ActivityError::InvalidData(
+            "Unlink the transfer pair before changing its activity type".into(),
+        )
+        .into());
+    }
     let asset_patch_supplied = update.asset.is_some();
     let subtype_patch = update.subtype.clone();
     let existing_activity_type = existing.activity_type.clone();
@@ -268,6 +382,14 @@ fn project_activity_update(
     );
     activity_to_update.activity_type_override =
         stored_type_override(activity_to_update.activity_type_override.as_deref());
+    if was_transfer
+        && matches!(
+            effective_activity_type(&activity_to_update),
+            "DEPOSIT" | "WITHDRAWAL" | "CREDIT"
+        )
+    {
+        activity_to_update.source_group_id = None;
+    }
     Ok(activity_to_update)
 }
 
@@ -296,7 +418,7 @@ fn split_effect(
         activity_id: before.id.clone(),
         removed_splits: if invalidates { splits.len() } else { 0 },
         has_retained_category_assignment: hidden,
-        fingerprint: format!("{:x}", Sha256::digest(state)),
+        fingerprint: hex::encode(Sha256::digest(state)),
     })
 }
 
@@ -354,6 +476,43 @@ fn clear_spending_splits_for_activity_tx(
     Ok(())
 }
 
+/// A linked transfer is neither spending nor income, so its legs drop those
+/// categories. Savings categories stay: they label a transfer out of Spending.
+fn clear_cash_flow_categories_tx(
+    tx: &mut crate::db::write_actor::DbWriteTx<'_>,
+    activity_id: &str,
+) -> Result<()> {
+    let taxonomies: Vec<&str> = [CashFlowBucket::Spending, CashFlowBucket::Income]
+        .into_iter()
+        .filter_map(CashFlowBucket::taxonomy_id)
+        .collect();
+    let existing_ids = activity_taxonomy_assignments::table
+        .filter(activity_taxonomy_assignments::activity_id.eq(activity_id))
+        .filter(activity_taxonomy_assignments::taxonomy_id.eq_any(taxonomies))
+        .select(activity_taxonomy_assignments::id)
+        .load::<String>(tx.conn())
+        .map_err(StorageError::from)?;
+    if existing_ids.is_empty() {
+        return Ok(());
+    }
+
+    let should_sync = should_sync_activity_local_id_outbox(tx.conn(), activity_id)?;
+    diesel::delete(
+        activity_taxonomy_assignments::table
+            .filter(activity_taxonomy_assignments::id.eq_any(&existing_ids)),
+    )
+    .execute(tx.conn())
+    .map_err(StorageError::from)?;
+
+    if should_sync {
+        for id in existing_ids {
+            tx.delete::<ActivityTaxonomyAssignmentDB>(id);
+        }
+    }
+
+    Ok(())
+}
+
 fn preserve_source_classification(
     activity: &mut ActivityDB,
     existing_activity_type: &str,
@@ -376,6 +535,22 @@ fn preserve_source_classification(
     )
     .is_none()
     {
+        // Cash reclassification replaces a legacy override. Other edits keep
+        // their existing override semantics.
+        if matches!(
+            (
+                type_override(existing_activity_type_override).unwrap_or(existing_activity_type),
+                activity.activity_type.as_str(),
+            ),
+            ("WITHDRAWAL", ACTIVITY_TYPE_TRANSFER_OUT)
+                | (ACTIVITY_TYPE_TRANSFER_OUT, "WITHDRAWAL")
+                | ("DEPOSIT", ACTIVITY_TYPE_TRANSFER_IN)
+                | (ACTIVITY_TYPE_TRANSFER_IN, "DEPOSIT")
+                | ("CREDIT", ACTIVITY_TYPE_TRANSFER_IN)
+                | (ACTIVITY_TYPE_TRANSFER_IN, "CREDIT")
+        ) {
+            activity.activity_type_override = None;
+        }
         return;
     }
 
@@ -465,10 +640,7 @@ fn source_group_blocks_transfer_link(
     conn: &mut SqliteConnection,
     source_group_id: Option<&str>,
 ) -> Result<bool> {
-    let Some(group_id) = source_group_id
-        .map(str::trim)
-        .filter(|group_id| !group_id.is_empty())
-    else {
+    let Some(group_id) = source_group_id.filter(|group_id| !group_id.trim().is_empty()) else {
         return Ok(false);
     };
 
@@ -687,6 +859,7 @@ impl ActivityRepository {
         date_to_utc_exclusive: Option<DateTime<Utc>>,
         instrument_type_filter: Option<Vec<String>>,
         activity_id_filter: Option<Vec<String>>,
+        include_archived: bool,
     ) -> Result<ActivitySearchResponse> {
         let mut conn = get_connection(&self.pool)?;
 
@@ -696,8 +869,11 @@ impl ActivityRepository {
             let mut query = activities::table
                 .inner_join(accounts::table.on(activities::account_id.eq(accounts::id)))
                 .left_join(assets::table.on(activities::asset_id.eq(assets::id.nullable())))
-                .filter(accounts::is_archived.eq(false))
                 .into_boxed();
+
+            if !include_archived {
+                query = query.filter(accounts::is_archived.eq(false));
+            }
 
             if let Some(ref activity_ids) = activity_id_filter {
                 query = query.filter(activities::id.eq_any(activity_ids));
@@ -943,6 +1119,235 @@ fn assert_final_cash_floor(activity_db: &ActivityDB) -> Result<()> {
     Ok(())
 }
 
+fn link_transfer_activities_tx(
+    tx: &mut crate::db::write_actor::DbWriteTx<'_>,
+    activity_a_id: &str,
+    activity_b_id: &str,
+) -> Result<(Activity, Activity)> {
+    use wealthfolio_core::activities::{ACTIVITY_TYPE_TRANSFER_IN, ACTIVITY_TYPE_TRANSFER_OUT};
+
+    if activity_a_id == activity_b_id {
+        return Err(Error::from(ActivityError::InvalidData(
+            "Cannot link an activity to itself".to_string(),
+        )));
+    }
+
+    let a = activities::table
+        .select(ActivityDB::as_select())
+        .find(activity_a_id)
+        .first::<ActivityDB>(tx.conn())
+        .map_err(|e| Error::from(ActivityError::NotFound(e.to_string())))?;
+    let b = activities::table
+        .select(ActivityDB::as_select())
+        .find(activity_b_id)
+        .first::<ActivityDB>(tx.conn())
+        .map_err(|e| Error::from(ActivityError::NotFound(e.to_string())))?;
+
+    let (mut transfer_in, mut transfer_out) =
+        match (effective_activity_type(&a), effective_activity_type(&b)) {
+            (ACTIVITY_TYPE_TRANSFER_IN, ACTIVITY_TYPE_TRANSFER_OUT) => (a, b),
+            (ACTIVITY_TYPE_TRANSFER_OUT, ACTIVITY_TYPE_TRANSFER_IN) => (b, a),
+            _ => {
+                return Err(Error::from(ActivityError::InvalidData(
+                    "Linking requires one TRANSFER_IN and one TRANSFER_OUT activity".to_string(),
+                )));
+            }
+        };
+
+    let in_group_blocks =
+        source_group_blocks_transfer_link(tx.conn(), transfer_in.source_group_id.as_deref())?;
+    // Linking a pair already linked to each other repairs it: it keeps
+    // the group and clears an external marker left on either leg. Both
+    // legs store the same persisted group id, and that group is a valid
+    // pair, so it holds exactly these two.
+    let shared_group = transfer_in
+        .source_group_id
+        .clone()
+        .filter(|group_id| transfer_out.source_group_id.as_deref() == Some(group_id.as_str()));
+    let linked_to_each_other = in_group_blocks && shared_group.is_some();
+    if !linked_to_each_other
+        && (in_group_blocks
+            || source_group_blocks_transfer_link(
+                tx.conn(),
+                transfer_out.source_group_id.as_deref(),
+            )?)
+    {
+        return Err(Error::from(ActivityError::InvalidData(
+            "One or both activities are already linked to another transfer".to_string(),
+        )));
+    }
+    if transfer_in.account_id == transfer_out.account_id
+        && !is_same_account_cash_fx_conversion_db(&transfer_in, &transfer_out)
+    {
+        return Err(Error::from(ActivityError::InvalidData(
+            "Same-account transfer links must be cash FX conversions with different currencies"
+                .to_string(),
+        )));
+    }
+    validate_link_transfer_asset_shape(&transfer_in, &transfer_out)?;
+
+    let group_id = match shared_group {
+        Some(group_id) if linked_to_each_other => group_id,
+        _ => Uuid::new_v4().to_string(),
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+
+    transfer_in.source_group_id = Some(group_id.clone());
+    transfer_in.metadata = set_transfer_flow_external(transfer_in.metadata, false);
+    transfer_in.is_user_modified = 1;
+    transfer_in.updated_at = now.clone();
+    transfer_out.source_group_id = Some(group_id);
+    transfer_out.metadata = set_transfer_flow_external(transfer_out.metadata, false);
+    transfer_out.is_user_modified = 1;
+    transfer_out.updated_at = now;
+
+    let updated_in = diesel::update(activities::table.find(&transfer_in.id))
+        .set((
+            activities::source_group_id.eq(transfer_in.source_group_id.clone()),
+            activities::metadata.eq(transfer_in.metadata.clone()),
+            activities::is_user_modified.eq(transfer_in.is_user_modified),
+            activities::updated_at.eq(&transfer_in.updated_at),
+        ))
+        .get_result::<ActivityDB>(tx.conn())
+        .map_err(StorageError::from)?;
+    let updated_out = diesel::update(activities::table.find(&transfer_out.id))
+        .set((
+            activities::source_group_id.eq(transfer_out.source_group_id.clone()),
+            activities::metadata.eq(transfer_out.metadata.clone()),
+            activities::is_user_modified.eq(transfer_out.is_user_modified),
+            activities::updated_at.eq(&transfer_out.updated_at),
+        ))
+        .get_result::<ActivityDB>(tx.conn())
+        .map_err(StorageError::from)?;
+
+    if should_sync_transfer_pair_raw_outbox(&updated_in, &updated_out) {
+        tx.update(&updated_in)?;
+        tx.update(&updated_out)?;
+    }
+
+    Ok((Activity::from(updated_in), Activity::from(updated_out)))
+}
+
+fn bulk_mutate_activities_tx(
+    tx: &mut crate::db::write_actor::DbWriteTx<'_>,
+    creates: Vec<NewActivity>,
+    updates: Vec<ActivityUpdate>,
+    delete_ids: Vec<String>,
+) -> Result<ActivityBulkMutationResult> {
+    let mut unlink_pairs = Vec::new();
+    let mut unlink_ids = HashSet::new();
+    for update in &updates {
+        if let Some(other_id) = &update.unlink_transfer_pair_id {
+            if delete_ids.contains(&update.id)
+                || delete_ids.contains(other_id)
+                || updates.iter().any(|other| other.id == *other_id)
+                || updates.iter().filter(|other| other.id == update.id).count() != 1
+                || unlink_ids.contains(&update.id)
+                || unlink_ids.contains(other_id)
+                || update.split_review.is_none()
+            {
+                return Err(ActivityError::InvalidData(
+                    "Paired unlink requires one edited leg and review of both legs".into(),
+                )
+                .into());
+            }
+            let pair = load_transfer_unlink_pair(tx.conn(), &update.id, other_id)?;
+            let counterpart = if pair.0.id == *other_id {
+                &pair.0
+            } else {
+                &pair.1
+            };
+            validate_split_review(tx.conn(), counterpart, counterpart, update)?;
+            unlink_ids.insert(pair.0.id.clone());
+            unlink_ids.insert(pair.1.id.clone());
+            unlink_pairs.push(pair);
+        }
+    }
+    let mut outcome = ActivityBulkMutationResult {
+        deleted: delete_activity_rows_tx(tx, &delete_ids, false)?,
+        ..Default::default()
+    };
+
+    for update in updates {
+        update.validate()?;
+        let existing_before_update = activities::table
+            .select(ActivityDB::as_select())
+            .find(&update.id)
+            .first::<ActivityDB>(tx.conn())
+            .map_err(StorageError::from)?;
+        let provider_account_id =
+            provider_account_id_for_broker_activity(tx.conn(), &existing_before_update)?;
+        let mut activity_db = project_activity_update(tx.conn(), &existing_before_update, &update)?;
+        validate_split_review(tx.conn(), &existing_before_update, &activity_db, &update)?;
+        activity_db.updated_at = chrono::Utc::now().to_rfc3339();
+        assert_final_cash_floor(&activity_db)?;
+
+        let updated_activity = diesel::update(activities::table.find(&activity_db.id))
+            .set(&activity_db)
+            .get_result::<ActivityDB>(tx.conn())
+            .map_err(StorageError::from)?;
+        if activity_update_invalidates_spending_splits(&existing_before_update, &updated_activity) {
+            clear_spending_splits_for_activity_tx(tx, &updated_activity.id)?;
+        }
+        if !unlink_ids.contains(&updated_activity.id) {
+            queue_activity_update_outbox(
+                tx,
+                &existing_before_update,
+                &updated_activity,
+                provider_account_id.as_deref(),
+            )?;
+        }
+        outcome.updated.push(Activity::from(updated_activity));
+    }
+
+    for (before_in, before_out) in unlink_pairs {
+        let current_in = activities::table
+            .find(&before_in.id)
+            .first::<ActivityDB>(tx.conn())
+            .map_err(StorageError::from)?;
+        let current_out = activities::table
+            .find(&before_out.id)
+            .first::<ActivityDB>(tx.conn())
+            .map_err(StorageError::from)?;
+        let (after_in, after_out) = unlink_transfer_pair_tx(tx, current_in, current_out)?;
+        for (before, after) in [(&before_in, &after_in), (&before_out, &after_out)] {
+            let provider_account_id = provider_account_id_for_broker_activity(tx.conn(), before)?;
+            queue_activity_update_outbox(tx, before, after, provider_account_id.as_deref())?;
+            if let Some(row) = outcome.updated.iter_mut().find(|row| row.id == after.id) {
+                *row = Activity::from(after.clone());
+            } else {
+                outcome.updated.push(Activity::from(after.clone()));
+            }
+        }
+    }
+
+    for new_activity in creates {
+        new_activity.validate()?;
+        let temp_id = new_activity.id.clone();
+        let mut activity_db: ActivityDB = new_activity.into();
+        // Always generate a new UUID for created activities
+        let generated_id = Uuid::new_v4().to_string();
+        activity_db.id = generated_id.clone();
+        assert_final_cash_floor(&activity_db)?;
+        let inserted_activity = diesel::insert_into(activities::table)
+            .values(&activity_db)
+            .get_result::<ActivityDB>(tx.conn())
+            .map_err(StorageError::from)?;
+        tx.insert(&inserted_activity)?;
+        outcome
+            .created
+            .push(Activity::from(inserted_activity.clone()));
+        outcome
+            .created_mappings
+            .push(ActivityBulkIdentifierMapping {
+                temp_id: temp_id.filter(|id| !id.is_empty()),
+                activity_id: generated_id,
+            });
+    }
+
+    Ok(outcome)
+}
+
 // Implement the trait for the repository
 #[async_trait]
 impl ActivityRepositoryTrait for ActivityRepository {
@@ -952,7 +1357,7 @@ impl ActivityRepositoryTrait for ActivityRepository {
             .select(ActivityDB::as_select())
             .find(activity_id)
             .first::<ActivityDB>(&mut conn)
-            .map_err(|e| Error::from(ActivityError::NotFound(e.to_string())))?;
+            .map_err(ActivityError::from)?;
         Ok(Activity::from(activity_db))
     }
 
@@ -1042,6 +1447,7 @@ impl ActivityRepositoryTrait for ActivityRepository {
             date_to_utc_exclusive,
             instrument_type_filter,
             activity_id_filter,
+            false,
         )
     }
 
@@ -1072,6 +1478,32 @@ impl ActivityRepositoryTrait for ActivityRepository {
             date_to_utc_exclusive,
             instrument_type_filter,
             activity_id_filter,
+            false,
+        )
+    }
+
+    fn export_activities(
+        &self,
+        include_archived: bool,
+        date_from_utc: Option<DateTime<Utc>>,
+        date_to_utc_exclusive: Option<DateTime<Utc>>,
+    ) -> Result<ActivitySearchResponse> {
+        self.search_activities_with_utc_bounds(
+            0,
+            i64::MAX,
+            None,
+            None,
+            None,
+            Some(Sort {
+                id: "date".to_string(),
+                desc: true,
+            }),
+            None,
+            date_from_utc,
+            date_to_utc_exclusive,
+            None,
+            None,
+            include_archived,
         )
     }
 
@@ -1224,119 +1656,19 @@ impl ActivityRepositoryTrait for ActivityRepository {
             .await
     }
 
+    async fn delete_activities_checked(&self, activity_ids: Vec<String>) -> Result<Vec<Activity>> {
+        self.writer
+            .exec_tx(move |tx| delete_activity_rows_tx(tx, &activity_ids, true))
+            .await
+    }
+
     async fn link_transfer_activities(
         &self,
         activity_a_id: String,
         activity_b_id: String,
     ) -> Result<(Activity, Activity)> {
-        use wealthfolio_core::activities::{ACTIVITY_TYPE_TRANSFER_IN, ACTIVITY_TYPE_TRANSFER_OUT};
-
-        if activity_a_id == activity_b_id {
-            return Err(Error::from(ActivityError::InvalidData(
-                "Cannot link an activity to itself".to_string(),
-            )));
-        }
-
         self.writer
-            .exec_tx(move |tx| -> Result<(Activity, Activity)> {
-                let a = activities::table
-                    .select(ActivityDB::as_select())
-                    .find(&activity_a_id)
-                    .first::<ActivityDB>(tx.conn())
-                    .map_err(|e| Error::from(ActivityError::NotFound(e.to_string())))?;
-                let b = activities::table
-                    .select(ActivityDB::as_select())
-                    .find(&activity_b_id)
-                    .first::<ActivityDB>(tx.conn())
-                    .map_err(|e| Error::from(ActivityError::NotFound(e.to_string())))?;
-
-                let (mut transfer_in, mut transfer_out) =
-                    match (effective_activity_type(&a), effective_activity_type(&b)) {
-                        (ACTIVITY_TYPE_TRANSFER_IN, ACTIVITY_TYPE_TRANSFER_OUT) => (a, b),
-                        (ACTIVITY_TYPE_TRANSFER_OUT, ACTIVITY_TYPE_TRANSFER_IN) => (b, a),
-                        _ => {
-                            return Err(Error::from(ActivityError::InvalidData(
-                                "Linking requires one TRANSFER_IN and one TRANSFER_OUT activity"
-                                    .to_string(),
-                            )));
-                        }
-                    };
-
-                let in_group_blocks = source_group_blocks_transfer_link(
-                    tx.conn(),
-                    transfer_in.source_group_id.as_deref(),
-                )?;
-                // Linking a pair already linked to each other repairs it: it keeps
-                // the group and clears an external marker left on either leg. Both
-                // legs store the same trimmed group id, and that group is a valid
-                // pair, so it holds exactly these two.
-                let shared_group = transfer_in.source_group_id.clone().filter(|group_id| {
-                    group_id.trim() == group_id.as_str()
-                        && transfer_out.source_group_id.as_deref() == Some(group_id.as_str())
-                });
-                let linked_to_each_other = in_group_blocks && shared_group.is_some();
-                if !linked_to_each_other
-                    && (in_group_blocks
-                        || source_group_blocks_transfer_link(
-                            tx.conn(),
-                            transfer_out.source_group_id.as_deref(),
-                        )?)
-                {
-                    return Err(Error::from(ActivityError::InvalidData(
-                        "One or both activities are already linked to another transfer".to_string(),
-                    )));
-                }
-                if transfer_in.account_id == transfer_out.account_id
-                    && !is_same_account_cash_fx_conversion_db(&transfer_in, &transfer_out)
-                {
-                    return Err(Error::from(ActivityError::InvalidData(
-                        "Same-account transfer links must be cash FX conversions with different currencies"
-                            .to_string(),
-                    )));
-                }
-                validate_link_transfer_asset_shape(&transfer_in, &transfer_out)?;
-
-                let group_id = match shared_group {
-                    Some(group_id) if linked_to_each_other => group_id,
-                    _ => Uuid::new_v4().to_string(),
-                };
-                let now = chrono::Utc::now().to_rfc3339();
-
-                transfer_in.source_group_id = Some(group_id.clone());
-                transfer_in.metadata = set_transfer_flow_external(transfer_in.metadata, false);
-                transfer_in.is_user_modified = 1;
-                transfer_in.updated_at = now.clone();
-                transfer_out.source_group_id = Some(group_id);
-                transfer_out.metadata = set_transfer_flow_external(transfer_out.metadata, false);
-                transfer_out.is_user_modified = 1;
-                transfer_out.updated_at = now;
-
-                let updated_in = diesel::update(activities::table.find(&transfer_in.id))
-                    .set((
-                        activities::source_group_id.eq(transfer_in.source_group_id.clone()),
-                        activities::metadata.eq(transfer_in.metadata.clone()),
-                        activities::is_user_modified.eq(transfer_in.is_user_modified),
-                        activities::updated_at.eq(&transfer_in.updated_at),
-                    ))
-                    .get_result::<ActivityDB>(tx.conn())
-                    .map_err(StorageError::from)?;
-                let updated_out = diesel::update(activities::table.find(&transfer_out.id))
-                    .set((
-                        activities::source_group_id.eq(transfer_out.source_group_id.clone()),
-                        activities::metadata.eq(transfer_out.metadata.clone()),
-                        activities::is_user_modified.eq(transfer_out.is_user_modified),
-                        activities::updated_at.eq(&transfer_out.updated_at),
-                    ))
-                    .get_result::<ActivityDB>(tx.conn())
-                    .map_err(StorageError::from)?;
-
-                if should_sync_transfer_pair_raw_outbox(&updated_in, &updated_out) {
-                    tx.update(&updated_in)?;
-                    tx.update(&updated_out)?;
-                }
-
-                Ok((Activity::from(updated_in), Activity::from(updated_out)))
-            })
+            .exec_tx(move |tx| link_transfer_activities_tx(tx, &activity_a_id, &activity_b_id))
             .await
     }
 
@@ -1367,190 +1699,35 @@ impl ActivityRepositoryTrait for ActivityRepository {
         delete_ids: Vec<String>,
     ) -> Result<ActivityBulkMutationResult> {
         self.writer
-            .exec_tx(move |tx| -> Result<ActivityBulkMutationResult> {
-                let mut unlink_pairs = Vec::new();
-                let mut unlink_ids = HashSet::new();
-                for update in &updates {
-                    if let Some(other_id) = &update.unlink_transfer_pair_id {
-                        if delete_ids.contains(&update.id)
-                            || delete_ids.contains(other_id)
-                            || updates.iter().any(|other| other.id == *other_id)
-                            || updates.iter().filter(|other| other.id == update.id).count() != 1
-                            || unlink_ids.contains(&update.id)
-                            || unlink_ids.contains(other_id)
-                            || update.split_review.is_none()
-                        {
-                            return Err(ActivityError::InvalidData(
-                                "Paired unlink requires one edited leg and review of both legs"
-                                    .into(),
-                            )
-                            .into());
-                        }
-                        let pair = load_transfer_unlink_pair(tx.conn(), &update.id, other_id)?;
-                        let counterpart = if pair.0.id == *other_id {
-                            &pair.0
-                        } else {
-                            &pair.1
-                        };
-                        validate_split_review(tx.conn(), counterpart, counterpart, update)?;
-                        unlink_ids.insert(pair.0.id.clone());
-                        unlink_ids.insert(pair.1.id.clone());
-                        unlink_pairs.push(pair);
-                    }
-                }
-                let mut outcome = ActivityBulkMutationResult::default();
+            .exec_tx(move |tx| bulk_mutate_activities_tx(tx, creates, updates, delete_ids))
+            .await
+    }
 
-                let delete_id_set: std::collections::HashSet<&str> =
-                    delete_ids.iter().map(|s| s.as_str()).collect();
-                let mut already_deleted: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
-
-                for delete_id in &delete_ids {
-                    if already_deleted.contains(delete_id) {
-                        continue;
-                    }
-                    let activity_db = activities::table
-                        .select(ActivityDB::as_select())
-                        .find(delete_id)
-                        .first::<ActivityDB>(tx.conn())
-                        .map_err(StorageError::from)?;
-                    if let Some(ref group_id) = activity_db.source_group_id.clone() {
-                        let counterpart_ids: Vec<String> = activities::table
-                            .filter(activities::source_group_id.eq(group_id))
-                            .filter(activities::id.ne(delete_id))
-                            .select(activities::id)
-                            .load::<String>(tx.conn())
-                            .map_err(StorageError::from)?;
-                        for cid in counterpart_ids {
-                            if already_deleted.contains(&cid) {
-                                continue;
-                            }
-                            if delete_id_set.contains(cid.as_str()) {
-                                // Explicitly in delete list — main loop will handle it
-                                continue;
-                            }
-                            let cp_db = activities::table
-                                .select(ActivityDB::as_select())
-                                .find(&cid)
-                                .first::<ActivityDB>(tx.conn())
-                                .map_err(StorageError::from)?;
-                            diesel::delete(activities::table.filter(activities::id.eq(&cid)))
-                                .execute(tx.conn())
-                                .map_err(StorageError::from)?;
-                            if should_sync_raw_activity_outbox(&cp_db) {
-                                tx.delete::<ActivityDB>(cid.clone());
-                            }
-                            outcome.deleted.push(Activity::from(cp_db));
-                            already_deleted.insert(cid);
-                        }
-                    }
-                    diesel::delete(activities::table.filter(activities::id.eq(delete_id)))
-                        .execute(tx.conn())
-                        .map_err(StorageError::from)?;
-                    if should_sync_raw_activity_outbox(&activity_db) {
-                        tx.delete::<ActivityDB>(delete_id.clone());
-                    }
-                    outcome.deleted.push(Activity::from(activity_db));
-                    already_deleted.insert(delete_id.clone());
-                }
-
-                for update in updates {
-                    update.validate()?;
-                    let existing_before_update = activities::table
-                        .select(ActivityDB::as_select())
-                        .find(&update.id)
-                        .first::<ActivityDB>(tx.conn())
-                        .map_err(StorageError::from)?;
-                    let provider_account_id = provider_account_id_for_broker_activity(
-                        tx.conn(),
-                        &existing_before_update,
-                    )?;
-                    let mut activity_db =
-                        project_activity_update(tx.conn(), &existing_before_update, &update)?;
-                    validate_split_review(
-                        tx.conn(),
-                        &existing_before_update,
-                        &activity_db,
-                        &update,
-                    )?;
-                    activity_db.updated_at = chrono::Utc::now().to_rfc3339();
-                    assert_final_cash_floor(&activity_db)?;
-
-                    let updated_activity = diesel::update(activities::table.find(&activity_db.id))
-                        .set(&activity_db)
-                        .get_result::<ActivityDB>(tx.conn())
-                        .map_err(StorageError::from)?;
-                    if activity_update_invalidates_spending_splits(
-                        &existing_before_update,
-                        &updated_activity,
-                    ) {
-                        clear_spending_splits_for_activity_tx(tx, &updated_activity.id)?;
-                    }
-                    if !unlink_ids.contains(&updated_activity.id) {
-                        queue_activity_update_outbox(
-                            tx,
-                            &existing_before_update,
-                            &updated_activity,
-                            provider_account_id.as_deref(),
-                        )?;
-                    }
-                    outcome.updated.push(Activity::from(updated_activity));
-                }
-
-                for (before_in, before_out) in unlink_pairs {
-                    let current_in = activities::table
-                        .find(&before_in.id)
-                        .first::<ActivityDB>(tx.conn())
-                        .map_err(StorageError::from)?;
-                    let current_out = activities::table
-                        .find(&before_out.id)
-                        .first::<ActivityDB>(tx.conn())
-                        .map_err(StorageError::from)?;
-                    let (after_in, after_out) =
-                        unlink_transfer_pair_tx(tx, current_in, current_out)?;
-                    for (before, after) in [(&before_in, &after_in), (&before_out, &after_out)] {
-                        let provider_account_id =
-                            provider_account_id_for_broker_activity(tx.conn(), before)?;
-                        queue_activity_update_outbox(
-                            tx,
-                            before,
-                            after,
-                            provider_account_id.as_deref(),
-                        )?;
-                        if let Some(row) = outcome.updated.iter_mut().find(|row| row.id == after.id)
-                        {
-                            *row = Activity::from(after.clone());
-                        } else {
-                            outcome.updated.push(Activity::from(after.clone()));
-                        }
-                    }
-                }
-
-                for new_activity in creates {
-                    new_activity.validate()?;
-                    let temp_id = new_activity.id.clone();
-                    let mut activity_db: ActivityDB = new_activity.into();
-                    // Always generate a new UUID for created activities
-                    let generated_id = Uuid::new_v4().to_string();
-                    activity_db.id = generated_id.clone();
-                    assert_final_cash_floor(&activity_db)?;
-                    let inserted_activity = diesel::insert_into(activities::table)
-                        .values(&activity_db)
-                        .get_result::<ActivityDB>(tx.conn())
-                        .map_err(StorageError::from)?;
-                    tx.insert(&inserted_activity)?;
-                    outcome
+    async fn mutate_and_link_transfer(
+        &self,
+        creates: Vec<NewActivity>,
+        updates: Vec<ActivityUpdate>,
+        activity_id: String,
+        counterpart_id: Option<String>,
+    ) -> Result<(Activity, Activity)> {
+        self.writer
+            .exec_tx(move |tx| {
+                let persisted = bulk_mutate_activities_tx(tx, creates, updates, Vec::new())?;
+                let counterpart_id = match counterpart_id {
+                    Some(id) => id,
+                    None => persisted
                         .created
-                        .push(Activity::from(inserted_activity.clone()));
-                    outcome
-                        .created_mappings
-                        .push(ActivityBulkIdentifierMapping {
-                            temp_id: temp_id.filter(|id| !id.is_empty()),
-                            activity_id: generated_id,
-                        });
-                }
-
-                Ok(outcome)
+                        .first()
+                        .map(|activity| activity.id.clone())
+                        .ok_or_else(|| {
+                            Error::from(ActivityError::InvalidData(
+                                "New transfer leg was not returned".to_string(),
+                            ))
+                        })?,
+                };
+                clear_cash_flow_categories_tx(tx, &activity_id)?;
+                clear_cash_flow_categories_tx(tx, &counterpart_id)?;
+                link_transfer_activities_tx(tx, &activity_id, &counterpart_id)
             })
             .await
     }
@@ -1633,8 +1810,8 @@ impl ActivityRepositoryTrait for ActivityRepository {
     }
 
     fn get_activities_by_source_group_id(&self, source_group_id: &str) -> Result<Vec<Activity>> {
-        let group_id = source_group_id.trim();
-        if group_id.is_empty() {
+        let group_id = source_group_id;
+        if group_id.trim().is_empty() {
             return Ok(Vec::new());
         }
 
@@ -2400,6 +2577,7 @@ impl ActivityRepositoryTrait for ActivityRepository {
             .filter(activities::activity_date.ge(start_utc.to_rfc3339()))
             .filter(activities::activity_date.lt(end_exclusive_utc.to_rfc3339()))
             .select((
+                activities::id,
                 activities::account_id,
                 sql::<Text>(&effective_type_sql("activities")),
                 activities::activity_date,
@@ -2414,6 +2592,7 @@ impl ActivityRepositoryTrait for ActivityRepository {
                 activities::source_group_id,
             ))
             .load::<(
+                String,
                 String,
                 String,
                 String,
@@ -2434,6 +2613,7 @@ impl ActivityRepositoryTrait for ActivityRepository {
             .into_iter()
             .filter_map(
                 |(
+                    id,
                     account_id,
                     activity_type,
                     activity_date_str,
@@ -2492,6 +2672,7 @@ impl ActivityRepositoryTrait for ActivityRepository {
                     };
 
                     Some(ContributionActivity {
+                        id,
                         account_id,
                         activity_type,
                         activity_instant,
@@ -3321,34 +3502,60 @@ impl ActivityRepositoryTrait for ActivityRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{create_pool, get_connection, init, run_migrations, write_actor::spawn_writer};
+    use crate::db::{
+        create_pool, get_connection, init, run_migrations, write_actor::spawn_writer, TestDir,
+    };
     use crate::fx::FxRepository;
     use crate::limits::ContributionLimitRepository;
     use crate::schema::{spending_activity_splits, sync_outbox};
     use crate::sync::app_sync::AppSyncRepository;
     use rust_decimal::Decimal;
-    use tempfile::tempdir;
     use wealthfolio_core::activities::{import_type, ActivityStatus, ActivityUpsert};
     use wealthfolio_core::fx::FxService;
     use wealthfolio_core::limits::{ContributionLimitService, ContributionLimitServiceTrait};
     use wealthfolio_core::sync::{SyncEntity, SyncOperation};
 
-    fn setup_db() -> (Arc<Pool<ConnectionManager<SqliteConnection>>>, WriteHandle) {
+    fn setup_db() -> (
+        Arc<Pool<ConnectionManager<SqliteConnection>>>,
+        WriteHandle,
+        TestDir,
+    ) {
         std::env::set_var("CONNECT_API_URL", "http://test.local");
-        let app_data = tempdir()
-            .expect("tempdir")
-            .keep()
-            .to_string_lossy()
-            .to_string();
+        let dir = TestDir::new();
+        let app_data = dir.path().to_string_lossy().to_string();
         let db_path = init(&app_data).expect("init db");
         run_migrations(&db_path).expect("migrate db");
         let pool = create_pool(&db_path).expect("create pool");
         let writer = spawn_writer(pool.as_ref().clone()).expect("spawn writer");
-        (pool, writer)
+        (pool, writer, dir)
     }
 
     fn insert_account(conn: &mut SqliteConnection, account_id: &str) {
         insert_account_with_archived(conn, account_id, false);
+    }
+
+    /// Callers tell a missing activity from a failed read by the error kind, so
+    /// only a missing row may be `NotFound`.
+    #[tokio::test]
+    async fn get_activity_reports_a_missing_row_as_not_found_and_other_errors_as_database() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+
+        let error = repo.get_activity("missing").unwrap_err();
+        assert!(
+            matches!(&error, Error::Activity(ActivityError::NotFound(_))),
+            "expected NotFound, got {error:?}"
+        );
+
+        let mut conn = get_connection(&pool).expect("conn");
+        diesel::sql_query("ALTER TABLE activities RENAME TO activities_unreadable")
+            .execute(&mut conn)
+            .expect("break the table");
+        let error = repo.get_activity("missing").unwrap_err();
+        assert!(
+            matches!(&error, Error::Activity(ActivityError::DatabaseError(_))),
+            "expected DatabaseError, got {error:?}"
+        );
     }
 
     fn insert_account_with_archived(conn: &mut SqliteConnection, account_id: &str, archived: bool) {
@@ -3442,8 +3649,251 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn contribution_limit_exclusions_are_persisted_scoped_and_do_not_change_activities() {
+        use wealthfolio_core::limits::{
+            ContributionLimitRepositoryTrait, ContributionTreatment, NewContributionLimit,
+        };
+
+        let (pool, writer, _dir) = setup_db();
+        let activity_repository = Arc::new(ActivityRepository::new(pool.clone(), writer.clone()));
+        let limit_repository = Arc::new(ContributionLimitRepository::new(
+            pool.clone(),
+            writer.clone(),
+        ));
+        let fx = Arc::new(FxService::new(Arc::new(FxRepository::new(
+            pool.clone(),
+            writer.clone(),
+        ))));
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            for id in ["retirement", "source-hidden", "outside"] {
+                insert_account(&mut conn, id);
+            }
+            diesel::update(accounts::table.find("source-hidden"))
+                .set(accounts::is_active.eq(false))
+                .execute(&mut conn)
+                .expect("hide source");
+            diesel::sql_query("INSERT INTO assets
+                (id, kind, name, display_code, is_active, quote_mode, quote_ccy, instrument_type, instrument_symbol, created_at, updated_at)
+                VALUES ('rollover-fund', 'INVESTMENT', 'Fund', 'FUND', 1, 'MARKET', 'USD', 'EQUITY', 'FUND', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+                .execute(&mut conn).expect("insert asset");
+            diesel::sql_query("INSERT INTO activities
+                (id, account_id, activity_type, status, activity_date, asset_id, quantity, unit_price, amount, currency, metadata, source_group_id, source_system, is_user_modified, needs_review, created_at, updated_at) VALUES
+                ('rollover', 'retirement', 'TRANSFER_IN', 'POSTED', '2025-06-15T12:00:00Z', 'rollover-fund', '100', '500', NULL, 'USD', '{\"flow\":{\"is_external\":true}}', NULL, 'MANUAL', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('deposit', 'retirement', 'DEPOSIT', 'POSTED', '2025-07-15T12:00:00Z', NULL, NULL, NULL, '5000', 'USD', NULL, NULL, 'MANUAL', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('internal-out', 'source-hidden', 'TRANSFER_OUT', 'POSTED', '2025-08-15T12:00:00Z', NULL, NULL, NULL, '2000', 'USD', NULL, 'internal-pair', 'MANUAL', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('internal-in', 'retirement', 'TRANSFER_IN', 'POSTED', '2025-08-15T12:00:00Z', NULL, NULL, NULL, '2000', 'USD', NULL, 'internal-pair', 'MANUAL', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('draft', 'retirement', 'DEPOSIT', 'DRAFT', '2025-08-15T12:00:00Z', NULL, NULL, NULL, '700', 'USD', NULL, NULL, 'MANUAL', 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('old-year', 'retirement', 'DEPOSIT', 'POSTED', '2024-08-15T12:00:00Z', NULL, NULL, NULL, '900', 'USD', NULL, NULL, 'MANUAL', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('outside', 'outside', 'DEPOSIT', 'POSTED', '2025-08-15T12:00:00Z', NULL, NULL, NULL, '1000', 'USD', NULL, NULL, 'MANUAL', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+                .execute(&mut conn).expect("insert contribution activities");
+        }
+        let input = NewContributionLimit {
+            id: None,
+            group_name: "Retirement".into(),
+            contribution_year: 2025,
+            limit_amount: 24000.0,
+            account_ids: Some("retirement,source-hidden".into()),
+            is_recurring: false,
+            start_date: None,
+            end_date: None,
+        };
+        let first = limit_repository
+            .create_contribution_limit(input.clone())
+            .await
+            .expect("first limit");
+        let second = limit_repository
+            .create_contribution_limit(input.clone())
+            .await
+            .expect("second limit");
+        let service = ContributionLimitService::new(
+            fx.clone(),
+            limit_repository.clone(),
+            activity_repository.clone(),
+        );
+        let before = {
+            let mut conn = get_connection(&pool).expect("conn");
+            serde_json::to_value(
+                activities::table
+                    .order(activities::id)
+                    .select(ActivityDB::as_select())
+                    .load::<ActivityDB>(&mut conn)
+                    .expect("activities"),
+            )
+            .expect("activity snapshot")
+        };
+        let details = service
+            .get_contribution_limit_details(&first.id, "USD")
+            .expect("details");
+        assert_eq!(details.calculation.total, Decimal::from(55000));
+        assert_eq!(details.activities.len(), 3);
+        assert_eq!(
+            details
+                .activities
+                .iter()
+                .find(|a| a.id == "internal-in")
+                .expect("internal transfer")
+                .treatment,
+            ContributionTreatment::InternalTransfer
+        );
+        assert_eq!(
+            details
+                .activities
+                .iter()
+                .find(|a| a.id == "rollover")
+                .expect("security transfer")
+                .amount,
+            Some(Decimal::from(50000))
+        );
+        assert!(limit_repository
+            .get_excluded_activity_ids(&first.id)
+            .expect("legacy default")
+            .is_empty());
+
+        service
+            .set_contribution_activity_excluded(&first.id, "rollover", true)
+            .await
+            .expect("exclude rollover");
+        let details = service
+            .get_contribution_limit_details(&first.id, "USD")
+            .expect("updated details");
+        assert_eq!(details.calculation.total, Decimal::from(5000));
+        let excluded = details
+            .activities
+            .iter()
+            .find(|a| a.id == "rollover")
+            .expect("excluded row remains visible");
+        assert_eq!(excluded.treatment, ContributionTreatment::ExcludedByUser);
+        assert_eq!(excluded.counted_amount, Decimal::ZERO);
+        assert!(excluded.can_exclude);
+        assert_eq!(
+            service
+                .calculate_deposits_for_contribution_limit(&first.id, "USD")
+                .expect("progress")
+                .total,
+            details.calculation.total
+        );
+        assert_eq!(
+            service
+                .calculate_deposits_for_contribution_limit(&second.id, "USD")
+                .expect("other limit")
+                .total,
+            Decimal::from(55000)
+        );
+
+        // Ordinary limit edits and recreating the repository preserve the choice.
+        limit_repository
+            .update_contribution_limit(
+                &first.id,
+                NewContributionLimit {
+                    group_name: "Renamed".into(),
+                    ..input
+                },
+            )
+            .await
+            .expect("edit limit");
+        let reloaded = ContributionLimitService::new(
+            fx,
+            Arc::new(ContributionLimitRepository::new(pool.clone(), writer)),
+            activity_repository,
+        );
+        assert_eq!(
+            reloaded
+                .calculate_deposits_for_contribution_limit(&first.id, "USD")
+                .expect("persisted progress")
+                .total,
+            Decimal::from(5000)
+        );
+        let outbox_before = {
+            let mut conn = get_connection(&pool).expect("conn");
+            sync_outbox_count(&mut conn)
+        };
+        for id in [
+            "internal-in",
+            "internal-out",
+            "draft",
+            "old-year",
+            "outside",
+            "missing",
+        ] {
+            assert!(
+                reloaded
+                    .set_contribution_activity_excluded(&first.id, id, true)
+                    .await
+                    .is_err(),
+                "must reject {id}"
+            );
+        }
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            assert_eq!(sync_outbox_count(&mut conn), outbox_before);
+        }
+
+        reloaded
+            .set_contribution_activity_excluded(&first.id, "deposit", true)
+            .await
+            .expect("exclude cash deposit");
+        assert_eq!(
+            reloaded
+                .calculate_deposits_for_contribution_limit(&first.id, "USD")
+                .expect("both excluded")
+                .total,
+            Decimal::ZERO
+        );
+        reloaded
+            .set_contribution_activity_excluded(&first.id, "rollover", false)
+            .await
+            .expect("restore rollover");
+        reloaded
+            .set_contribution_activity_excluded(&first.id, "deposit", false)
+            .await
+            .expect("restore deposit");
+        assert_eq!(
+            reloaded
+                .calculate_deposits_for_contribution_limit(&first.id, "USD")
+                .expect("restored progress")
+                .total,
+            Decimal::from(55000)
+        );
+        let mut conn = get_connection(&pool).expect("conn");
+        let after = serde_json::to_value(
+            activities::table
+                .order(activities::id)
+                .select(ActivityDB::as_select())
+                .load::<ActivityDB>(&mut conn)
+                .expect("activities unchanged"),
+        )
+        .expect("activity snapshot");
+        assert_eq!(
+            before, after,
+            "exclusions must not rewrite cash, securities, basis, metadata, or broker/user flags"
+        );
+        let payloads = sync_outbox::table
+            .filter(sync_outbox::entity_id.eq(&first.id))
+            .select(sync_outbox::payload)
+            .load::<String>(&mut conn)
+            .expect("limit outbox");
+        assert!(
+            payloads.iter().any(|payload| {
+                let payload: serde_json::Value =
+                    serde_json::from_str(payload).expect("outbox JSON");
+                payload
+                    .get("excluded_activity_ids")
+                    .or_else(|| payload.get("excludedActivityIds"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|ids| {
+                        serde_json::from_str::<Vec<String>>(ids)
+                            .expect("exclusions JSON")
+                            .contains(&"rollover".to_string())
+                    })
+            }),
+            "manual choices must use the existing limit sync outbox"
+        );
+    }
+
+    #[tokio::test]
     async fn contribution_limit_uses_final_amount_and_preserves_transfer_classification() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let activity_repository = ActivityRepository::new(pool.clone(), writer.clone());
         let limit_repository = ContributionLimitRepository::new(pool.clone(), writer.clone());
         let fx_service = FxService::new(Arc::new(FxRepository::new(pool.clone(), writer)));
@@ -3657,7 +4107,7 @@ mod tests {
 
     #[tokio::test]
     async fn cash_ledger_activities_read_as_whole_activities_do() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         {
             let mut conn = get_connection(&pool).expect("conn");
@@ -3706,7 +4156,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_broker_activity_queues_user_patch_outbox() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -3825,7 +4275,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_activities_uses_effective_broker_activity_type() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -3972,7 +4422,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_activities_orders_same_instant_rows_in_application_order() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -4039,7 +4489,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_activities_returns_the_asset_contract_multiplier() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -4102,9 +4552,71 @@ mod tests {
         assert_eq!(multipliers.get("standard-buy"), Some(&Some("100")));
     }
 
+    /// The data export reads archived accounts' rows on request, which the
+    /// activity search never does.
+    #[tokio::test]
+    async fn export_activities_includes_archived_accounts_only_on_request() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            insert_account(&mut conn, "open-account");
+            insert_account_with_archived(&mut conn, "closed-account", true);
+            diesel::sql_query(
+                "INSERT INTO activities
+                 (id, account_id, asset_id, activity_type, status, activity_date, quantity,
+                  unit_price, amount, currency, is_user_modified, needs_review, created_at, updated_at)
+                 VALUES
+                 ('open-deposit', 'open-account', NULL, 'DEPOSIT', 'POSTED',
+                  '2026-01-02T00:00:00Z', NULL, NULL, '100', 'CAD', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                 ('closed-deposit', 'closed-account', NULL, 'DEPOSIT', 'POSTED',
+                  '2026-01-05T00:00:00Z', NULL, NULL, '50', 'CAD', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                 ('closed-old', 'closed-account', NULL, 'DEPOSIT', 'POSTED',
+                  '2025-06-01T00:00:00Z', NULL, NULL, '10', 'CAD', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            )
+            .execute(&mut conn)
+            .expect("insert activities");
+        }
+
+        let ids = |response: ActivitySearchResponse| {
+            response
+                .data
+                .into_iter()
+                .map(|activity| activity.id)
+                .collect::<Vec<_>>()
+        };
+
+        let without = repo.export_activities(false, None, None).expect("export");
+        assert_eq!(ids(without), vec!["open-deposit"]);
+
+        let with = repo.export_activities(true, None, None).expect("export");
+        assert_eq!(
+            ids(with),
+            vec!["closed-deposit", "open-deposit", "closed-old"]
+        );
+
+        let ranged = repo
+            .export_activities(
+                true,
+                Some("2026-01-01T00:00:00Z".parse().unwrap()),
+                Some("2026-01-03T00:00:00Z".parse().unwrap()),
+            )
+            .expect("export");
+        assert_eq!(ids(ranged), vec!["open-deposit"]);
+
+        let search = repo
+            .search_activities(0, 10, None, None, None, None, None, None, None, None, None)
+            .expect("search");
+        assert_eq!(
+            search.meta.total_row_count, 1,
+            "search still skips archived rows"
+        );
+    }
+
     #[tokio::test]
     async fn search_activities_returns_the_asset_quote_currency() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -4161,7 +4673,7 @@ mod tests {
 
     #[tokio::test]
     async fn category_queries_use_effective_broker_activity_type() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -4214,7 +4726,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_activities_in_utc_range_uses_exact_timestamp_bounds() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -4274,7 +4786,7 @@ mod tests {
 
     #[tokio::test]
     async fn notes_only_broker_edit_preserves_type_override_and_base_type_clears_it() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -4367,7 +4879,7 @@ mod tests {
 
     #[tokio::test]
     async fn broker_owned_only_edit_persists_locally_without_outbox() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -4421,6 +4933,119 @@ mod tests {
         assert_eq!(row.0.as_deref(), Some("60.00"));
         assert_eq!(row.1, "2026-01-02T00:00:00+00:00");
         assert_eq!(sync_outbox_count(&mut conn), 0);
+    }
+
+    #[tokio::test]
+    async fn checked_deletion_rejects_a_link_created_after_planning_without_writes() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            insert_account(&mut conn, "acc-out");
+            insert_account(&mut conn, "acc-in");
+            insert_transfer_activity(&mut conn, "out", "acc-out", "TRANSFER_OUT", None, None);
+            insert_transfer_activity(&mut conn, "in", "acc-in", "TRANSFER_IN", None, None);
+        }
+        let reviewed_ids = vec!["out".to_string()];
+        repo.link_transfer_activities("out".into(), "in".into())
+            .await
+            .expect("concurrent link");
+        let before_outbox = {
+            let mut conn = get_connection(&pool).expect("conn");
+            sync_outbox_count(&mut conn)
+        };
+
+        let error = repo
+            .delete_activities_checked(reviewed_ids)
+            .await
+            .expect_err("stale deletion");
+        assert!(error.to_string().contains("prepare deletion again"));
+        assert!(repo.get_activity("out").is_ok());
+        assert!(repo.get_activity("in").is_ok());
+        let mut conn = get_connection(&pool).expect("conn");
+        assert_eq!(sync_outbox_count(&mut conn), before_outbox);
+    }
+
+    #[tokio::test]
+    async fn checked_deletion_returns_all_rows_and_preserves_broker_outbox_policy() {
+        for broker in [false, true] {
+            let (pool, writer, _dir) = setup_db();
+            let repo = ActivityRepository::new(pool.clone(), writer);
+            {
+                let mut conn = get_connection(&pool).expect("conn");
+                insert_account(&mut conn, "acc-out");
+                insert_account(&mut conn, "acc-in");
+                insert_transfer_activity(
+                    &mut conn,
+                    "out",
+                    "acc-out",
+                    "TRANSFER_OUT",
+                    Some("pair"),
+                    None,
+                );
+                insert_transfer_activity(
+                    &mut conn,
+                    "in",
+                    "acc-in",
+                    "TRANSFER_IN",
+                    Some("pair"),
+                    None,
+                );
+                if broker {
+                    diesel::update(activities::table)
+                        .set((
+                            activities::source_system.eq("SNAPTRADE"),
+                            activities::source_record_id.eq("broker-record"),
+                        ))
+                        .execute(&mut conn)
+                        .expect("broker provenance");
+                }
+            }
+            let deleted = repo
+                .delete_activities_checked(vec!["out".into(), "in".into()])
+                .await
+                .expect("reviewed pair");
+            let ids: HashSet<&str> = deleted
+                .iter()
+                .map(|activity| activity.id.as_str())
+                .collect();
+            assert_eq!(ids, HashSet::from(["out", "in"]));
+            assert!(repo.get_activity("out").is_err());
+            assert!(repo.get_activity("in").is_err());
+            let mut conn = get_connection(&pool).expect("conn");
+            assert_eq!(sync_outbox_count(&mut conn), if broker { 0 } else { 2 });
+        }
+    }
+
+    #[tokio::test]
+    async fn checked_deletion_rejects_incomplete_or_missing_groups_atomically() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+        {
+            let mut conn = get_connection(&pool).expect("conn");
+            insert_account(&mut conn, "acc");
+            for id in ["one", "two", "fee"] {
+                insert_transfer_activity(
+                    &mut conn,
+                    id,
+                    "acc",
+                    "DEPOSIT",
+                    Some("broker-group"),
+                    None,
+                );
+            }
+        }
+        for ids in [vec!["one", "two"], vec!["one", "two", "fee", "missing"]] {
+            assert!(repo
+                .delete_activities_checked(ids.into_iter().map(str::to_string).collect())
+                .await
+                .is_err());
+            for id in ["one", "two", "fee"] {
+                assert!(repo.get_activity(id).is_ok());
+            }
+            let mut conn = get_connection(&pool).expect("conn");
+            assert_eq!(sync_outbox_count(&mut conn), 0);
+        }
     }
 
     fn insert_activity_with_subtype(
@@ -4500,7 +5125,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_activities_by_ids_filters_missing_and_archived_accounts() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "acc-active");
@@ -4543,7 +5168,7 @@ mod tests {
 
     #[tokio::test]
     async fn split_activities_by_asset_cover_every_account_and_the_effective_type() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "acc-active");
@@ -4593,7 +5218,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_activities_by_ids_empty_input_returns_empty() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool, writer);
 
         let activities = repo
@@ -4605,7 +5230,7 @@ mod tests {
 
     #[tokio::test]
     async fn holdings_snapshot_bounds_ignore_zero_quantity_and_archived_accounts() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "acc-open");
@@ -4666,7 +5291,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_activity_patches_subtype_and_review_independently() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -4737,7 +5362,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_activity_preserves_omitted_asset_and_clears_explicit_patch() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -4836,7 +5461,7 @@ mod tests {
 
     #[tokio::test]
     async fn final_cash_migration_updates_are_local_only() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         {
             let mut conn = get_connection(&pool).expect("conn");
@@ -4937,7 +5562,7 @@ mod tests {
 
     #[tokio::test]
     async fn final_cash_migration_reports_amounts_it_cannot_safely_replace() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         {
             let mut conn = get_connection(&pool).expect("conn");
@@ -4990,7 +5615,7 @@ mod tests {
 
     #[tokio::test]
     async fn reviewed_financial_edits_disclose_splits_and_reject_stale_state_atomically() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         {
             let mut conn = get_connection(&pool).expect("conn");
@@ -5080,7 +5705,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_and_bulk_amount_updates_clear_spending_splits() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         {
             let mut conn = get_connection(&pool).expect("conn");
@@ -5149,7 +5774,7 @@ mod tests {
 
     #[tokio::test]
     async fn income_report_treats_explicit_zero_as_final_for_asset_backed_income() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -5331,7 +5956,7 @@ mod tests {
     #[tokio::test]
     async fn income_report_reads_a_blank_override_as_none() {
         // Engine rules §5: a blank override is none wherever the type is read.
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "acc-income");
@@ -5358,7 +5983,7 @@ mod tests {
     #[tokio::test]
     async fn income_report_leaves_out_a_dividend_of_capital() {
         // Engine rules R7.4: a return of capital is no income.
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "acc-income");
@@ -5412,7 +6037,7 @@ mod tests {
     #[tokio::test]
     async fn income_report_reads_when_each_income_was_received() {
         // The income page converts each row at the rate on that day.
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "acc-income");
@@ -5446,7 +6071,7 @@ mod tests {
 
     #[tokio::test]
     async fn edits_store_type_overrides_as_they_read() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "acc-override");
@@ -5521,7 +6146,7 @@ mod tests {
     /// UNIQUE(account_id, context_kind, source_system) constraint error on replay.
     #[tokio::test]
     async fn relink_preserves_row_id() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -5641,7 +6266,7 @@ mod tests {
     /// foreign key, so a link that arrives without its template fails on the other device.
     #[tokio::test]
     async fn save_import_mapping_syncs_template_before_link() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer.clone());
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "acc-map");
@@ -5674,7 +6299,7 @@ mod tests {
 
     #[tokio::test]
     async fn saved_import_mapping_arrives_on_another_device() {
-        let (pool_a, writer_a) = setup_db();
+        let (pool_a, writer_a, _dir_a) = setup_db();
         let repo_a = ActivityRepository::new(pool_a.clone(), writer_a.clone());
         insert_account(&mut get_connection(&pool_a).expect("conn"), "acc-map");
         repo_a
@@ -5689,7 +6314,7 @@ mod tests {
         let events = outbox_as_remote_events(&pool_a, &writer_a);
 
         // A pull page applies as one batch.
-        let (pool_b, writer_b) = setup_db();
+        let (pool_b, writer_b, _dir_b) = setup_db();
         insert_account(&mut get_connection(&pool_b).expect("conn"), "acc-map");
         let applied = AppSyncRepository::new(pool_b.clone(), writer_b.clone())
             .apply_remote_events_lww_batch(events.clone())
@@ -5699,7 +6324,7 @@ mod tests {
 
         // When a batch fails, events apply one at a time in pull order, with foreign keys
         // checked per event, so the template has to come before the link.
-        let (pool_c, writer_c) = setup_db();
+        let (pool_c, writer_c, _dir_c) = setup_db();
         insert_account(&mut get_connection(&pool_c).expect("conn"), "acc-map");
         let sync_c = AppSyncRepository::new(pool_c.clone(), writer_c.clone());
         for (entity, entity_id, op, event_id, client_timestamp, seq, payload) in events {
@@ -5733,7 +6358,7 @@ mod tests {
     /// rejected on other devices, which ignore writes to an entity they saw deleted.
     #[tokio::test]
     async fn updating_import_mapping_keeps_template_id() {
-        let (pool_a, writer_a) = setup_db();
+        let (pool_a, writer_a, _dir_a) = setup_db();
         let repo_a = ActivityRepository::new(pool_a.clone(), writer_a.clone());
         let mut conn = get_connection(&pool_a).expect("conn");
         insert_account(&mut conn, "acc-map");
@@ -5786,7 +6411,7 @@ mod tests {
             .expect("count account templates");
         assert_eq!(account_templates, 1);
 
-        let (pool_b, writer_b) = setup_db();
+        let (pool_b, writer_b, _dir_b) = setup_db();
         let mut conn_b = get_connection(&pool_b).expect("conn");
         insert_account(&mut conn_b, "acc-map");
         insert_template(&mut conn_b, "tmpl-shared");
@@ -5806,7 +6431,7 @@ mod tests {
 
     #[tokio::test]
     async fn linking_sourced_transfer_legs_preserves_identity_through_broker_refresh() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
         insert_account(&mut conn, "checking");
@@ -5896,7 +6521,7 @@ mod tests {
 
     #[tokio::test]
     async fn link_transfer_activities_marks_user_modified_and_allows_same_account_cash_fx() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6014,7 +6639,7 @@ mod tests {
 
     #[tokio::test]
     async fn link_transfer_activities_repairs_orphan_source_group() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6058,8 +6683,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mutate_and_link_transfer_rolls_back_the_created_leg_when_linking_fails() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+        let mut conn = get_connection(&pool).expect("conn");
+
+        insert_account(&mut conn, "acc-a");
+        insert_account(&mut conn, "acc-b");
+        insert_account(&mut conn, "acc-c");
+        insert_transfer_activity(
+            &mut conn,
+            "out",
+            "acc-a",
+            "TRANSFER_OUT",
+            Some("group-1"),
+            None,
+        );
+        insert_transfer_activity(
+            &mut conn,
+            "in",
+            "acc-b",
+            "TRANSFER_IN",
+            Some("group-1"),
+            None,
+        );
+
+        let new_leg = NewActivity {
+            id: None,
+            account_id: "acc-c".to_string(),
+            asset: None,
+            activity_type: "TRANSFER_IN".to_string(),
+            subtype: None,
+            activity_date: "2024-01-15T00:00:00Z".to_string(),
+            quantity: None,
+            unit_price: None,
+            currency: "USD".to_string(),
+            fee: None,
+            tax: None,
+            amount: Some(Decimal::new(100, 0)),
+            status: None,
+            notes: None,
+            fx_rate: None,
+            metadata: None,
+            needs_review: None,
+            source_system: None,
+            source_record_id: None,
+            source_group_id: None,
+            idempotency_key: None,
+            import_run_id: None,
+        };
+        let result = repo
+            .mutate_and_link_transfer(vec![new_leg], Vec::new(), "out".to_string(), None)
+            .await;
+
+        assert!(result.is_err(), "the source is already linked");
+        let in_acc_c: i64 = activities::table
+            .filter(activities::account_id.eq("acc-c"))
+            .count()
+            .get_result(&mut conn)
+            .expect("count");
+        assert_eq!(
+            in_acc_c, 0,
+            "the new leg must roll back with the failed link"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutate_and_link_transfer_drops_spending_and_income_categories_only() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+        let mut conn = get_connection(&pool).expect("conn");
+
+        insert_account(&mut conn, "acc-a");
+        insert_account(&mut conn, "acc-b");
+        insert_transfer_activity(&mut conn, "out", "acc-a", "TRANSFER_OUT", None, None);
+        insert_transfer_activity(&mut conn, "in", "acc-b", "TRANSFER_IN", None, None);
+        for (id, activity_id, taxonomy_id, category_id) in [
+            ("spending", "out", "spending_categories", "cat_food"),
+            ("savings", "out", "savings_categories", "cat_savings"),
+            ("income", "in", "income_sources", "cat_income_employment"),
+        ] {
+            diesel::sql_query(format!(
+                "INSERT INTO activity_taxonomy_assignments (id,activity_id,taxonomy_id,category_id,weight,source,created_at,updated_at) VALUES ('{id}','{activity_id}','{taxonomy_id}','{category_id}',10000,'manual','2026-01-01','2026-01-01')"
+            ))
+            .execute(&mut conn)
+            .expect("assignment");
+        }
+
+        repo.mutate_and_link_transfer(
+            Vec::new(),
+            Vec::new(),
+            "out".to_string(),
+            Some("in".to_string()),
+        )
+        .await
+        .expect("link");
+
+        let remaining: Vec<String> = activity_taxonomy_assignments::table
+            .select(activity_taxonomy_assignments::id)
+            .load(&mut conn)
+            .expect("assignments");
+        assert_eq!(remaining, vec!["savings".to_string()]);
+    }
+
+    #[tokio::test]
     async fn link_transfer_activities_repairs_a_pair_already_linked_to_each_other() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6118,7 +6847,7 @@ mod tests {
 
     #[tokio::test]
     async fn link_transfer_activities_does_not_merge_pairs_whose_groups_differ_by_whitespace() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6185,7 +6914,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_external_transfer_clears_invalid_source_group() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6241,9 +6970,196 @@ mod tests {
         assert_eq!(stored_group, None);
     }
 
+    /// A card payment changed back to a refund/credit leaves its transfer
+    /// group behind, as a deposit does (#2740).
+    #[tokio::test]
+    async fn transfer_in_reclassified_as_credit_clears_source_group() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+        let mut conn = get_connection(&pool).expect("conn");
+
+        insert_account(&mut conn, "acc-a");
+        insert_transfer_activity(
+            &mut conn,
+            "orphan-in",
+            "acc-a",
+            "TRANSFER_IN",
+            Some("orphan-group"),
+            Some(r#"{"flow":{"is_external":true}}"#),
+        );
+
+        let updated = repo
+            .update_activity(ActivityUpdate {
+                unlink_transfer_pair_id: None,
+                split_review: None,
+                id: "orphan-in".to_string(),
+                account_id: "acc-a".to_string(),
+                asset: None,
+                activity_type: "CREDIT".to_string(),
+                subtype: None,
+                activity_date: "2024-01-15T00:00:00Z".to_string(),
+                quantity: None,
+                unit_price: None,
+                currency: "USD".to_string(),
+                fee: None,
+                tax: None,
+                amount: None,
+                status: None,
+                needs_review: None,
+                notes: None,
+                fx_rate: None,
+                metadata: None,
+            })
+            .await
+            .expect("transfer in becomes a credit");
+
+        assert_eq!(updated.activity_type, "CREDIT");
+        assert_eq!(updated.source_group_id, None);
+    }
+
+    #[tokio::test]
+    async fn card_credit_and_bank_withdrawal_convert_into_a_linked_payment() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+        let mut conn = get_connection(&pool).expect("conn");
+
+        insert_account(&mut conn, "card");
+        insert_account(&mut conn, "bank");
+        insert_transfer_activity(&mut conn, "card-credit", "card", "CREDIT", None, None);
+        insert_transfer_activity(&mut conn, "bank-out", "bank", "WITHDRAWAL", None, None);
+        let internal = Some(r#"{"flow":{"is_external":false}}"#.to_string());
+        let retype = |id: &str, account_id: &str, activity_type: &str| ActivityUpdate {
+            unlink_transfer_pair_id: None,
+            split_review: None,
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            asset: None,
+            activity_type: activity_type.to_string(),
+            subtype: Some(String::new()),
+            activity_date: "2024-01-15T00:00:00Z".to_string(),
+            quantity: None,
+            unit_price: None,
+            currency: "USD".to_string(),
+            fee: None,
+            tax: None,
+            amount: None,
+            status: None,
+            needs_review: None,
+            notes: None,
+            fx_rate: None,
+            metadata: internal.clone(),
+        };
+
+        let (transfer_in, transfer_out) = repo
+            .mutate_and_link_transfer(
+                Vec::new(),
+                vec![
+                    retype("card-credit", "card", ACTIVITY_TYPE_TRANSFER_IN),
+                    retype("bank-out", "bank", ACTIVITY_TYPE_TRANSFER_OUT),
+                ],
+                "card-credit".to_string(),
+                Some("bank-out".to_string()),
+            )
+            .await
+            .expect("a card credit pairs as the card's payment");
+
+        assert_eq!(transfer_in.id, "card-credit");
+        assert_eq!(transfer_in.effective_type(), ACTIVITY_TYPE_TRANSFER_IN);
+        assert_eq!(transfer_out.id, "bank-out");
+        assert_eq!(transfer_out.effective_type(), ACTIVITY_TYPE_TRANSFER_OUT);
+        assert!(transfer_in.source_group_id.is_some());
+        assert_eq!(transfer_in.source_group_id, transfer_out.source_group_id);
+    }
+
+    /// #2740: a synced card credit the user changed to the card's payment stays
+    /// a payment when the provider sends the same record again as a credit.
+    #[tokio::test]
+    async fn resync_keeps_a_synced_card_credit_the_user_made_a_payment() {
+        let (pool, writer, _dir) = setup_db();
+        let repo = ActivityRepository::new(pool.clone(), writer);
+        let mut conn = get_connection(&pool).expect("conn");
+        insert_account(&mut conn, "card");
+        drop(conn);
+
+        let synced = |id: &str, notes: &str| ActivityUpsert {
+            id: id.into(),
+            account_id: "card".into(),
+            asset_id: None,
+            activity_type: "CREDIT".into(),
+            subtype: None,
+            activity_date: "2026-01-15T00:00:00Z".into(),
+            quantity: None,
+            unit_price: None,
+            currency: "USD".into(),
+            fee: None,
+            tax: None,
+            amount: Some(Decimal::new(45000, 2)),
+            status: None,
+            notes: Some(notes.into()),
+            fx_rate: None,
+            metadata: None,
+            needs_review: None,
+            source_system: Some("SIMPLEFIN".into()),
+            source_record_id: Some("card-txn-1".into()),
+            source_group_id: None,
+            idempotency_key: Some(format!("key-{id}")),
+            import_run_id: None,
+        };
+        assert_eq!(
+            repo.bulk_upsert(vec![synced("card-credit", "PAYMENT - THANK YOU")])
+                .await
+                .expect("first sync")
+                .created,
+            1
+        );
+
+        repo.update_activity(ActivityUpdate {
+            unlink_transfer_pair_id: None,
+            split_review: None,
+            id: "card-credit".to_string(),
+            account_id: "card".to_string(),
+            asset: None,
+            activity_type: ACTIVITY_TYPE_TRANSFER_IN.to_string(),
+            subtype: Some(String::new()),
+            activity_date: "2026-01-15T00:00:00Z".to_string(),
+            quantity: None,
+            unit_price: None,
+            currency: "USD".to_string(),
+            fee: None,
+            tax: None,
+            amount: None,
+            status: None,
+            needs_review: None,
+            notes: Some("PAYMENT - THANK YOU".to_string()),
+            fx_rate: None,
+            metadata: Some(r#"{"flow":{"is_external":true}}"#.to_string()),
+        })
+        .await
+        .expect("user changes the credit to a payment");
+
+        // The provider re-sends the record under the same id, then under a new
+        // id and key (matched by its source identity).
+        for refresh in [
+            synced("card-credit", "Provider refresh"),
+            synced("card-credit-reissued", "Provider refresh"),
+        ] {
+            let result = repo.bulk_upsert(vec![refresh]).await.expect("re-sync");
+            assert_eq!(result.skipped, 1, "{result:?}");
+            assert_eq!(result.created, 0, "{result:?}");
+        }
+
+        let activities = repo.get_activities().expect("activities");
+        assert_eq!(activities.len(), 1);
+        let payment = &activities[0];
+        assert_eq!(payment.id, "card-credit");
+        assert_eq!(payment.effective_type(), ACTIVITY_TYPE_TRANSFER_IN);
+        assert_eq!(payment.notes.as_deref(), Some("PAYMENT - THANK YOU"));
+        assert!(payment.is_user_modified);
+    }
+
     #[tokio::test]
     async fn link_transfer_activities_rejects_security_asset_or_quantity_mismatch() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6317,7 +7233,7 @@ mod tests {
 
     #[tokio::test]
     async fn link_and_unlink_transfer_activities_use_effective_activity_type() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6357,7 +7273,7 @@ mod tests {
 
     #[tokio::test]
     async fn mixed_broker_manual_transfer_link_is_local_only() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6404,7 +7320,7 @@ mod tests {
 
     #[tokio::test]
     async fn transfer_scope_query_fetches_touching_rows_and_counterparts() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6484,7 +7400,7 @@ mod tests {
 
     #[tokio::test]
     async fn unlink_transfer_activities_clears_pair_and_marks_external() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6567,7 +7483,7 @@ mod tests {
 
     #[tokio::test]
     async fn mixed_broker_manual_transfer_unlink_is_local_only() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6618,7 +7534,7 @@ mod tests {
 
     #[tokio::test]
     async fn unlink_transfer_activities_rejects_unlinked_or_mismatched_pairs() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6696,7 +7612,7 @@ mod tests {
 
         // Exercise provider fallback, incoming ID fallback, and generated composite IDs.
         for identity in ["provider", "id", "composite"] {
-            let (pool, writer) = setup_db();
+            let (pool, writer, _dir) = setup_db();
             let repo = ActivityRepository::new(pool.clone(), writer);
             let mut conn = get_connection(&pool).expect("conn");
             insert_account(&mut conn, "acc-sync");
@@ -6810,7 +7726,7 @@ mod tests {
 
     #[tokio::test]
     async fn bulk_upsert_prefers_source_identity_over_idempotency_fallback() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6920,7 +7836,7 @@ mod tests {
 
     #[tokio::test]
     async fn bulk_upsert_preserves_existing_draft_review_state() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -6984,7 +7900,7 @@ mod tests {
 
     #[tokio::test]
     async fn bulk_upsert_preserves_existing_posted_review_flag() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -7041,7 +7957,7 @@ mod tests {
 
     #[tokio::test]
     async fn bulk_upsert_reports_overwritten_split_asset_ids() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
 
         {
@@ -7111,7 +8027,7 @@ mod tests {
 
     #[tokio::test]
     async fn bulk_upsert_collapses_duplicate_source_identity_within_same_batch() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         let mut conn = get_connection(&pool).expect("conn");
 
@@ -7237,7 +8153,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_refuses_cost_adjustments_without_an_asset() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         insert_account(&mut get_connection(&pool).expect("conn"), "acc-floor");
         for subtype in [
@@ -7272,7 +8188,7 @@ mod tests {
     /// cash silently (the CSV-import bypass class, PR #1571).
     #[tokio::test]
     async fn create_refuses_posted_cash_row_without_amount_or_flag() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         {
             let mut conn = get_connection(&pool).expect("conn");
@@ -7305,7 +8221,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_allows_flagged_missing_amount_and_security_transfers() {
-        let (pool, writer) = setup_db();
+        let (pool, writer, _dir) = setup_db();
         let repo = ActivityRepository::new(pool.clone(), writer);
         {
             let mut conn = get_connection(&pool).expect("conn");

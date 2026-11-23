@@ -1,4 +1,6 @@
 import { DashboardCard } from "@/components/dashboard-card";
+import { CompactAmount } from "@/components/financial/compact-amount";
+import { CARD_LABEL, CATEGORY_CSS_COLORS } from "@/components/financial/styles";
 import { useNumberFormatting } from "@wealthfolio/ui";
 import {
   Collapsible,
@@ -8,11 +10,8 @@ import {
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CompactAmount } from "./compact-amount";
 import { CompositionBar } from "./composition-bar";
 import {
-  CARD_LABEL,
-  CATEGORY_CSS_COLORS,
   deriveChange,
   formatChangePercent,
   hadBalanceBefore,
@@ -33,15 +32,12 @@ const NAME_CELL = "col-span-full min-w-0 @min-[28rem]/breakdown:col-span-1";
 const AMOUNT_CELL =
   "min-w-0 text-end text-xs tabular-nums [overflow-wrap:anywhere] @min-[40rem]/breakdown:text-sm";
 
-function ChangeCell({ change, currency }: { change: Change; currency: string }) {
+function ChangeCell({ change, currency }: { change: Change | null; currency: string }) {
   const formatting = useNumberFormatting();
   const { t } = useTranslation();
+  if (!change) return <span className={`${AMOUNT_CELL} text-muted-foreground`}>—</span>;
   const isZero = Math.abs(change.amount) < 0.005;
-  const color = isZero
-    ? "text-muted-foreground/60"
-    : change.amount > 0
-      ? "text-success"
-      : "text-destructive";
+  const color = isZero ? "text-muted-foreground/60" : change.amount > 0 ? "text-gain" : "text-loss";
   const sign = isZero ? "" : change.amount > 0 ? "+" : "-";
   return (
     <div className="flex min-w-0 flex-col items-end gap-x-2 gap-y-0.5 text-end @min-[48rem]/breakdown:flex-row @min-[48rem]/breakdown:flex-wrap @min-[48rem]/breakdown:items-baseline @min-[48rem]/breakdown:justify-end">
@@ -61,7 +57,7 @@ interface RowProps {
   dotColor: string;
   value: number;
   percentOfSection: number;
-  change: Change;
+  change: Change | null;
   currency: string;
   negative?: boolean;
   onClick?: () => void;
@@ -77,6 +73,7 @@ function BreakdownRow({
   negative,
   onClick,
 }: RowProps) {
+  const formatting = useNumberFormatting();
   // The hover is a layer reaching 8px past the row on each side, so the row, its
   // subgrid columns and its divider stay put (the layout guard keeps rows inside
   // their parent).
@@ -107,7 +104,7 @@ function BreakdownRow({
         </span>
       </div>
       <span className="text-muted-foreground/70 hidden text-end text-sm tabular-nums @min-[40rem]/breakdown:block">
-        {percentOfSection.toFixed(1)}%
+        {formatting.formatPercent(percentOfSection / 100, { digits: 1 })}
       </span>
       <span className={`text-foreground ${AMOUNT_CELL} inline-flex items-baseline justify-end`}>
         {negative && value !== 0 ? "-" : ""}
@@ -123,6 +120,7 @@ interface BreakdownTableProps {
   history: ParsedHistoryPoint[];
   currency: string;
   periodLabel: string;
+  isIncomplete?: boolean;
   onSelect: (selected: SelectedCategory) => void;
 }
 
@@ -131,14 +129,18 @@ export function BreakdownTable({
   history,
   currency,
   periodLabel,
+  isIncomplete = false,
   onSelect,
 }: BreakdownTableProps) {
   const { t } = useTranslation();
   const hasLiabilities = data.liabilities.total > 0 || data.liabilities.breakdown.length > 0;
-  const netWorthChange = deriveChange(
-    history.map((point) => point.netWorth),
-    false,
-  );
+  const canCompare = history.length >= 2;
+  const netWorthChange = canCompare
+    ? deriveChange(
+        history.map((point) => point.netWorth),
+        false,
+      )
+    : null;
   const [assetsOpen, setAssetsOpen] = useState(true);
   const [liabilitiesOpen, setLiabilitiesOpen] = useState(true);
 
@@ -194,7 +196,9 @@ export function BreakdownTable({
                     percentOfSection={
                       data.assets.total > 0 ? (item.value / data.assets.total) * 100 : 0
                     }
-                    change={deriveChange(seriesFor(history, item.category), false)}
+                    change={
+                      canCompare ? deriveChange(seriesFor(history, item.category), false) : null
+                    }
                     currency={currency}
                     onClick={() =>
                       onSelect({
@@ -262,11 +266,15 @@ export function BreakdownTable({
                             ? (item.value / data.liabilities.total) * 100
                             : 0
                         }
-                        change={deriveChange(
-                          series,
-                          true,
-                          hadBalanceBefore(history, item.firstValueDate),
-                        )}
+                        change={
+                          series.length >= 2
+                            ? deriveChange(
+                                series,
+                                true,
+                                hadBalanceBefore(history, item.firstValueDate),
+                              )
+                            : null
+                        }
                         currency={currency}
                         onClick={
                           item.assetId
@@ -299,7 +307,11 @@ export function BreakdownTable({
               <span className="text-muted-foreground w-3.5 shrink-0 text-center font-normal">
                 =
               </span>
-              {t("insights:networth.breakdown_table.net_worth")}
+              {t(
+                isIncomplete
+                  ? "common:known_subtotal"
+                  : "insights:networth.breakdown_table.net_worth",
+              )}
             </span>
             <span className="hidden @min-[40rem]/breakdown:block" />
             <span className={`${AMOUNT_CELL} font-bold`}>

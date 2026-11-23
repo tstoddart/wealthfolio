@@ -4,14 +4,132 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.13.1] - 2026-11-18
+
+### Changed
+
+- Rejected host API calls may carry a stable `code` property, so an add-on can
+  branch on the reason. Messages are localized, so don't parse them. Secret
+  failures can report `SECRET_TOO_LARGE` and `SECRET_STORE_UNAVAILABLE`. (#2676)
+- On Windows, `ctx.api.secrets` stores values up to 1 MiB of UTF-8 data by
+  splitting them across credentials. The credential store's available capacity
+  may set a lower limit, and a read rejects an incomplete value instead of
+  returning part of it. (#2676)
+
+## [3.13.0] - 2026-11-11
 
 ### Added
 
-- `Settings.themeId`: the host's theme (Classic, Signature, Ember or Cupertino),
-  absent on hosts without themes. Addon pages get the theme's colours through
-  the host's CSS variables and its `data-theme` attribute on `<html>`, and
-  follow it when the user switches.
+- `IncomeByAsset.dividendIncome`: the part of the asset's `income` that is
+  dividends. `income` still counts every income type. Absent on older hosts.
+- `ActivityImport.charges` and the `ActivityCharge` type: labelled lines that
+  break an imported row's `fee` and `tax` down as the statement listed them
+  (commission, stamp duty, ...). Each line is `fee` or `tax`, a free-text label
+  and an amount in the row's currency. The lines must add up to both totals or
+  the row is rejected, and `checkImport` flags it. They are stored in the
+  activity's `metadata.charges` and change no calculation. Older hosts ignore
+  the field.
+- `ActivityImport.sourceRecordId`: your own ID for the transaction a row
+  records. A row with one is a duplicate of the activity your add-on imported
+  with the same ID into the same account, whatever its values or comment, so
+  identical transactions with different IDs import separately. A row with an ID
+  also matches an activity imported before you sent IDs, by its values. The
+  activity stores the trimmed ID as `addon:<your add-on id>:<ID>`; blank IDs are
+  treated as absent. ID matching is scoped to the add-on; the values fallback
+  can match any import without an ID in the account.
+- `ActivityImport.metadata`: details to keep with the imported activity, stored
+  in its metadata under `addons[<your add-on id>]`. Older hosts ignore this
+  field and `sourceRecordId`. (#2621)
+- `allocationTargets`, read-only, in the new Allocation Targets category (high
+  risk), each function behind its own grant:
+  - `getAll()`: the user's targets, archived ones excluded, each with its scope,
+    range settings and weights. A weight carries its category's id, `key` and
+    name, so an addon can tell categories apart across installs
+    (`allocation-targets.getAll`).
+  - `getDrift(targetId)`: current against target by category over the target's
+    own scope, in the base currency, or `null` when no live target has that id
+    (`allocation-targets.getDrift`). It values holdings live, so call it on
+    demand.
+- `BudgetTotals.savingsPlanned` and `savingsActual`, and
+  `BudgetGroupRow.savingsTargetTotal` and `savingsActual`: the savings
+  categories' goal and the money moved to savings, apart from the spending
+  figures. The plan's total allocation is `spendingPlanned + savingsPlanned`.
+  Older hosts don't return them. (#2249)
+- `ContributionLimit.isRecurring`: the limit repeats every year. Set on the
+  latest limit of a group, the host shows the later years with the same amount
+  until the user saves or edits one. (#1841)
+- `@wealthfolio/ui`:
+  - `ExternalLink` and `ExternalLinkProvider`: a link that opens through the
+    `openUrl` it is given, or its provider's, and as a normal link without
+    either. (#2490)
+  - `useNumericDraft`: localized editing of a number field in the user's region
+    format; the caller decides when to commit. (#2456)
+  - `canonicalCurrencyCode(code)`: a typed code spelled as stored, trimmed and
+    upper-cased, except quote units such as `GBp` and `ZAc`. (#2453)
+  - Phone form rows (`FormRowGroup`, `FormRowLabel`, `FormRowValue`,
+    `formRowClassName`, `formRowValueClassName`) and sheet screens
+    (`SheetNavigation`, `SheetScreen`, `SheetScreenTrigger`,
+    `useInSheetNavigation`), so a picker opens as a screen of the current sheet
+    with a back button. (#2485)
+  - New props: `safeArea` on `DialogContent` and `SheetContent`, `fillSafeArea`
+    on `SheetContent`, `floating` on `SheetHeader`, `sheetTitle` on
+    `SearchableSelect`, `appearance` (`field` or `row`) on `DatePickerInput` and
+    `size` (`default` or `large`) on `Calendar` and `RangeCalendar`. (#2485)
+
+### Changed
+
+- The host shares `lucide-react` 1.x with addons (was 0.561). Lucide 1.0 removed
+  the brand icons (`Chrome`, `Facebook`, `Github`, `Gitlab`, `Instagram`,
+  `Linkedin`, `Slack`, `Twitter`, `Youtube` and others, with their `*Icon` and
+  `Lucide*` names). An addon that imports one of them from the host's
+  `lucide-react` fails to load; bundle your own icon instead. Other icon names,
+  including the deprecated aliases such as `Trash2` and `Loader2`, still work.
+  Some icons are redrawn: `Trash` now has the two inner lines, like `Trash2`.
+  New addons from the templates declare `minWealthfolioVersion` 3.13.0, the
+  first release with Lucide 1.x, so an addon that uses a Lucide 1.x icon cannot
+  be installed on a host that only has 0.561.
+- `spending.getBudget()` counts spending only (expense categories and group
+  buffers) in `BudgetTotals.spending*` and in a group's `planned`, `actual`,
+  `remaining` and `overspent`. Savings categories report in the new savings
+  fields, and a savings category is never overspent. (#2249)
+- `Holding.weight` and `MonetaryValue.local` and `base` can be `null` when the
+  host can't value them; check for `null` before doing arithmetic.
+  `AmountDisplay` and `GainAmount` accept `null` or `undefined` and show "—".
+  (#2542)
+- `DialogContent`, `AlertDialogContent` and `SheetContent` render inside a
+  viewport that excludes system bars, display cutouts and the on-screen
+  keyboard. Mobile dialogs fit their content, up to `90dvh`; set a maximum with
+  `--overlay-max-height`. `Button` sizes keep a 44px minimum target on touch
+  screens and below 1024px. The migration notes are in the `@wealthfolio/ui`
+  README. (#2485)
+- Financial displays and the formatters group four-digit numbers in every
+  locale: Spanish and Polish, which group only from five digits by default, now
+  show `1234` as `1.234` and `1 234`. (#2603)
+
+### Fixed
+
+- `GainAmount` keeps the sign in front of the number on right-to-left pages.
+  (#2601)
+- `CurrencyInput` selects the listed currency for a code typed in lower case
+  (`eur` selects EUR) instead of offering it as a custom currency. (#2453)
+- Removed `Account.balance` from the SDK type to match the account metadata
+  returned by `accounts.getAll()` and `accounts.create()`. For account values,
+  use `portfolio.getLatestValuations()` with the required portfolio permission.
+
+## [3.12.0] - 2026-11-01
+
+### Added
+
+- `ActivityImport.sourceGroupId` and `ACTIVITY_SUBTYPES.CONVERSION_OUT` /
+  `CONVERSION_IN`: an import records an in-kind conversion (a fund switch
+  carried at cost) as two ADJUSTMENT rows, one of each subtype, sharing a
+  `sourceGroupId`. Both rows go in the same import; a conversion row without its
+  other row fails the import. Other rows ignore `sourceGroupId`.
+
+- `Settings.themeId`: the host's theme (Classic, Signature, Ember, Cupertino,
+  Newspaper, Cyber, Terminal or Poster), absent on hosts without themes. Addon
+  pages get the theme's colours through the host's CSS variables and its
+  `data-theme` attribute on `<html>`, and follow it when the user switches.
 - `Settings.textSize`: the host's text size on this device (`small`, `default`,
   `large` or `extra-large`), absent on hosts without it. It scales the root font
   size, so everything an addon sizes in `rem` grows with the host's text; addon
@@ -23,12 +141,66 @@ and this project adheres to
   and allocation strips use it, so an addon chart that does matches them.
 - Chart colours as theme tokens: `--series-1` to `--series-8` for lines and
   markers compared on one axis (each reaches 3:1 on the page and on cards),
-  `--net-worth`, and `--spending-accent`, `--spending-deep` and
-  `--spending-mid`. The treemap ramps gain `--heatmap-positive-mid` and
-  `--heatmap-negative-mid`.
+  `--investments` (the portfolio value line at or above zero), `--net-worth`,
+  and `--spending-accent`, `--spending-deep` and `--spending-mid`. The treemap
+  ramps gain `--heatmap-positive-mid` and `--heatmap-negative-mid`.
+- `Settings.gainColors`: the user's gain and loss colours, `green-up` (the
+  default), `red-up` or `red-up-blue-down`, synced across their devices; absent
+  on older hosts. The host sets it on `<html>` as `data-gain-colors`, and addon
+  pages get the same attribute.
+- Gain and loss tokens that follow that setting: `--gain` and `--loss`, each
+  with `-subtle`, `-subtle-foreground` and `-subtle-border`, and the treemap's
+  `--heatmap-gain-*` and `--heatmap-loss-*` (`-low`, `-mid`, `-high`). Use them,
+  not `--success` and `--destructive`, for a price or value going up or down.
+  `--loss-blue` and its subtle surface are the true blue that losses take with
+  `red-up-blue-down`, and `--heatmap-blue-*` its treemap ramp.
+- Eight `spending` functions, each behind its own grant:
+  - `getContext()`: whether Spending is on, its accounts and its excluded
+    categories (`spending.getContext`). It never enrolls an account.
+  - `getBudget(periodKey?)`: the budget for a `YYYY-MM` month (the current one
+    when omitted), or for the default targets with `"default"`
+    (`spending.getBudget`).
+  - `getEvents()` and `getEventTypes()`: the stored events and the event types
+    (`spending.getEvents`, `spending.getEventTypes`).
+  - `assignCategory(activityId, kind, categoryId)` and
+    `unassignCategory(activityId, kind)`: set or clear a transaction's category
+    as a manual choice (`activities.assignCategory`,
+    `activities.unassignCategory`, high risk). Assigning fails on a split
+    transaction; clearing leaves its splits as they are.
+  - `setEvent(activityId, eventId)`: tag a transaction with an event, or pass
+    `null` to untag it (`activities.setEvent`, high risk).
+  - `upsertBudgetTarget(target, periodKey?)`: save a default target
+    (`target.periodKey` `"default"`) or a month's override, and get back the
+    budget for `periodKey` (`budgets.upsertBudgetTarget`, high risk, in the new
+    Budget Management category). A default target applies to every month that
+    inherits it, past months included; a month's override wins.
+- `SpendingPeriodSummary.fromSavings`: money brought back from savings in the
+  period, so `net = income - outflow - saved + fromSavings`. Absent on older
+  hosts.
+- `@wealthfolio/ui`: `SwipableView` takes `onSelectView`, called on release as
+  soon as a swipe picks a view, while the slide still moves (keep it light, a
+  highlight), and `onSwipeStart`, called once per drag when the slide first
+  moves. `DateRangeSelector` takes `allTimeFrom`, the earliest date the ALL
+  preset stands for: the calendar shows and opens on it, while the ALL value
+  keeps its sentinel start. Data grid `select` cells take `isDisabled(rowData)`,
+  like `checkbox` cells.
 
 ### Changed
 
+- `SwipableView` calls `onViewChange` when a swipe lands on its view, not when
+  it is released. A `selectedIndex` naming a view whose slide isn't there yet is
+  reached once the slide mounts, instead of the slide it stopped on being
+  reported as a swipe.
+- `goals.getFunding()` returns Retirement's share of an account as the user set
+  it, not what Retirement counts. Retirement's share is now an upper limit:
+  savings goals take their shares first and Retirement counts at most what they
+  leave, so the shares on one account can add up to more than 100%.
+- `goals.update()` saves only a goal's editable inputs. Health, progress and
+  projection fields are calculated by the host, and values sent for them are
+  ignored.
+- `GainAmount`, `GainPercent` and `AmountDisplay` (with `colorFormat`) draw with
+  the gain and loss tokens, so they follow the user's gain and loss colours;
+  with the default they look as before.
 - The component theme tokens (`--button-*`, `--control-*`, `--field-*`,
   `--switch-*`, `--card-*`, `--popup-*`, `--overlay-*`, `--dialog-radius`,
   `--sheet-bg`, `--badge-radius`, `--segmented-*`) follow the host's theme;
@@ -49,10 +221,25 @@ and this project adheres to
   Wealthfolio 3.11.0 returned numbers. The existing `string | number` SDK type
   accepts both; JavaScript consumers must use explicit decimal arithmetic for
   totals instead of adding raw values with `+`.
+- `activities.getTransferPair()` also returns a conversion's two rows:
+  `transferOut` is the CONVERSION_OUT row and `transferIn` the CONVERSION_IN
+  row. Code that expects a transfer should check `activityType`.
 - Activity updates sent through the addon bridge are projected onto the public
   SDK fields (including the legacy `notes` alias). Native-only controls such as
   `unlinkTransferPairId` are not forwarded by `update` or `saveMany`;
   `activities.unlinkTransfer` retains its separate function grant.
+
+### Fixed
+
+- The package root exports the data types' runtime values, not only their types:
+  `ActivityType`, `ACTIVITY_TYPES`, `ActivityStatus`, `ACTIVITY_SUBTYPES`,
+  `AssetKind`, `QuoteMode`, `DataSource`, `AccountType`, `HoldingType`,
+  `ACTIVITY_TYPE_PREFIX_LENGTH`, `getEffectiveType` and `hasUserOverride`.
+  Before, they were exported as types only, so code such as
+  `ACTIVITY_SUBTYPES.CONVERSION_OUT` failed to compile (TS1362, "cannot be used
+  as a value because it was exported using 'export type'"). The host supplies
+  the SDK at run time, so add-ons that use these values must set
+  `minWealthfolioVersion` to `3.12.0` or newer.
 
 ## [3.11.0] - 2026-10-22
 

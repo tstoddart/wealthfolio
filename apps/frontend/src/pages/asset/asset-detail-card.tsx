@@ -15,10 +15,10 @@ import { Separator } from "@wealthfolio/ui/components/ui/separator";
 
 interface AssetDetail {
   numShares: number;
-  marketValue: number;
-  costBasis: number;
-  averagePrice: number;
-  portfolioPercent: number;
+  marketValue: number | null;
+  costBasis: number | null;
+  averagePrice: number | null;
+  portfolioPercent: number | null;
   todaysReturn: number | null;
   todaysReturnPercent: number | null;
   unrealizedPnl: number | null;
@@ -114,7 +114,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
 
   const amountTone = (amount: number | null) => {
     if (amount == null || amount === 0) return "";
-    return amount < 0 ? "text-destructive" : "text-success";
+    return amount < 0 ? "text-loss" : "text-gain";
   };
 
   const positionRows = [
@@ -124,11 +124,16 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
     },
     {
       label: averageCostLabel,
-      value: <PriceDisplay value={averagePrice} currency={currency} isHidden={isBalanceHidden} />,
+      value:
+        averagePrice == null ? (
+          "—"
+        ) : (
+          <PriceDisplay value={averagePrice} currency={currency} isHidden={isBalanceHidden} />
+        ),
     },
     {
       label: t("asset:detailCard.percent_of_portfolio"),
-      value: numberFormatting.formatPercent(portfolioPercent),
+      value: portfolioPercent == null ? "—" : numberFormatting.formatPercent(portfolioPercent),
     },
   ];
 
@@ -208,14 +213,16 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
   return (
     <Card className={className}>
       <CardHeader className="flex flex-row items-center justify-between pb-0">
-        <CardTitle className="flex w-full justify-between text-lg font-bold">
+        {/* When a long quantity and value don't fit side by side (larger text sizes), the
+            value wraps under the quantity, still at the end, instead of running into it. */}
+        <CardTitle className="flex w-full flex-wrap items-start justify-between gap-x-4 gap-y-2 text-lg font-bold">
           <div>
             <div>
               <QuantityDisplay value={numShares} isHidden={isBalanceHidden} />
             </div>
             <div className="text-muted-foreground text-sm font-normal">{quantityLabel}</div>
           </div>
-          <div>
+          <div className="ms-auto text-end">
             <div className="text-xl font-extrabold">
               <AmountDisplay value={marketValue} currency={currency} isHidden={isBalanceHidden} />
             </div>
@@ -306,7 +313,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                   <span className="text-muted-foreground text-xs">
                     {t("asset:detailCard.high")}
                   </span>
-                  <div className="text-success text-sm font-medium">
+                  <div className="text-gain text-sm font-medium">
                     <PriceDisplay
                       value={quote.high}
                       currency={quoteCurrency ?? currency}
@@ -316,7 +323,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                 </div>
                 <div className="flex flex-col items-end">
                   <span className="text-muted-foreground text-xs">{t("asset:detailCard.low")}</span>
-                  <div className="text-destructive text-sm font-medium">
+                  <div className="text-loss text-sm font-medium">
                     <PriceDisplay
                       value={quote.low}
                       currency={quoteCurrency ?? currency}
@@ -377,7 +384,7 @@ const AssetDetailCard: React.FC<AssetDetailProps> = ({ assetData, className }) =
                   <span className="text-sm font-medium">
                     {bondSpec.couponFrequency === "ZERO"
                       ? t("asset:detailCard.zero_coupon")
-                      : `${(bondSpec.couponRate * 100).toFixed(3)}%`}
+                      : numberFormatting.formatPercent(bondSpec.couponRate, { digits: 3 })}
                     {bondSpec.couponFrequency &&
                       bondSpec.couponFrequency !== "ZERO" &&
                       ` ${bondSpec.couponFrequency.replace("_", " ").toLowerCase()}`}

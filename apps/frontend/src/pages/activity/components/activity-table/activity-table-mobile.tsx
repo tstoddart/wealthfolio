@@ -5,13 +5,15 @@ import {
   calculateActivityValue,
   formatSplitRatio,
   isAssetBackedIncomeActivity,
+  isAssetBackedIncomeSubtype,
   isCashActivity,
   isCashTransfer,
+  isConversionRow,
   isFeeActivity,
   isIncomeActivity,
   isSecuritiesTransfer,
   isSplitActivity,
-  localizeActivityTypeName,
+  localizeActivityRowLabel,
 } from "@/lib/activity-utils";
 import { ActivityType } from "@/lib/constants";
 import { formatOptionSubtitle, parseOccSymbol } from "@/lib/occ-symbol";
@@ -83,6 +85,8 @@ interface ActivityTableMobileProps {
   onDuplicate: (activity: ActivityDetails) => Promise<void>;
   onLinkTransfer?: (activity: ActivityDetails) => void;
   onUnlinkTransfer?: (activity: ActivityDetails) => void;
+  /** Each account's type by id, for the row menu's card actions. */
+  accountTypeById?: ReadonlyMap<string, string>;
   filtersActive?: boolean;
   onAdd?: () => void;
   /** Show a "Connect Account" button next to the add button when there are no activities. */
@@ -105,6 +109,7 @@ export const ActivityTableMobile = ({
   onDuplicate,
   onLinkTransfer,
   onUnlinkTransfer,
+  accountTypeById,
   filtersActive = false,
   onAdd,
   showConnectAccountLink = false,
@@ -236,6 +241,9 @@ export const ActivityTableMobile = ({
     const isTransferActivity =
       activityType === ActivityType.TRANSFER_IN || activityType === ActivityType.TRANSFER_OUT;
     const isAssetBackedIncome = isAssetBackedIncomeActivity(activityType, symbol, activity.assetId);
+    // A cash dividend names its paying asset too; only the subtype says the
+    // income arrived as units with a price.
+    const isIncomeInKind = isAssetBackedIncomeSubtype(activityType, activity.subtype);
     const isCash = isTransferActivity
       ? isCashTransfer(activityType, symbol, activity.assetId)
       : isCashActivity(activityType) && !isAssetBackedIncome;
@@ -271,7 +279,7 @@ export const ActivityTableMobile = ({
 
     // Compact View
     if (isCompactView) {
-      const activityTypeLabel = localizeActivityTypeName(t, activity.activityType);
+      const activityTypeLabel = localizeActivityRowLabel(t, activity);
       return (
         <Card
           key={activity.id}
@@ -300,7 +308,7 @@ export const ActivityTableMobile = ({
                         )}
                         <span className="truncate">{displaySymbol}</span>
                       </p>
-                      {activity.activityType !== "SPLIT" && (
+                      {activity.activityType !== "SPLIT" && !isConversionRow(activity) && (
                         <AmountDisplay
                           value={displayValue}
                           currency={activity.currency}
@@ -363,6 +371,7 @@ export const ActivityTableMobile = ({
               onDuplicate={onDuplicate}
               onLinkTransfer={onLinkTransfer}
               onUnlinkTransfer={onUnlinkTransfer}
+              accountType={accountTypeById?.get(activity.accountId)}
               touch
             />
           </div>
@@ -424,6 +433,7 @@ export const ActivityTableMobile = ({
               onDuplicate={onDuplicate}
               onLinkTransfer={onLinkTransfer}
               onUnlinkTransfer={onUnlinkTransfer}
+              accountType={accountTypeById?.get(activity.accountId)}
               touch
             />
           </div>
@@ -476,25 +486,25 @@ export const ActivityTableMobile = ({
                 {activity.activityType === "SPLIT"
                   ? t("activity:table.ratio")
                   : (isCashActivity(activity.activityType) &&
-                        !isAssetBackedIncome &&
+                        !isIncomeInKind &&
                         !isSecuritiesTransfer(activity.activityType, symbol, activity.assetId)) ||
                       isCashTransfer(activity.activityType, symbol, activity.assetId) ||
-                      (isIncomeActivity(activity.activityType) && !isAssetBackedIncome)
+                      (isIncomeActivity(activity.activityType) && !isIncomeInKind)
                     ? t("activity:form.label_amount")
                     : isOptionActivity
                       ? t("activity:table.premium")
                       : t("activity:field_price")}
               </span>
               <span className="font-medium">
-                {activity.activityType === "FEE" ? (
+                {activity.activityType === "FEE" || isConversionRow(activity) ? (
                   "-"
                 ) : activity.activityType === "SPLIT" ? (
                   formatSplitRatio(Number(activity.amount))
                 ) : (isCashActivity(activity.activityType) &&
-                    !isAssetBackedIncome &&
+                    !isIncomeInKind &&
                     !isSecuritiesTransfer(activity.activityType, symbol, activity.assetId)) ||
                   isCashTransfer(activity.activityType, symbol, activity.assetId) ||
-                  (isIncomeActivity(activity.activityType) && !isAssetBackedIncome) ? (
+                  (isIncomeActivity(activity.activityType) && !isIncomeInKind) ? (
                   <AmountDisplay
                     value={Number(activity.amount)}
                     currency={activity.currency}
@@ -535,7 +545,7 @@ export const ActivityTableMobile = ({
             )}
 
             {/* Total Value */}
-            {activity.activityType !== "SPLIT" && (
+            {activity.activityType !== "SPLIT" && !isConversionRow(activity) && (
               <div className="flex items-center justify-between border-t pt-1.5">
                 <span className="text-muted-foreground font-medium">
                   {t("activity:table.total_value")}

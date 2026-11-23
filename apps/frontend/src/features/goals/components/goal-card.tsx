@@ -87,6 +87,7 @@ export function GoalCard({ goal }: { goal: Goal }) {
   const { settings } = useSettingsContext();
 
   const currency = settings?.baseCurrency ?? goal.currency ?? "USD";
+  const hasCurrentValue = goal.summaryCurrentValue != null;
   const current = goal.summaryCurrentValue ?? 0;
   const target = goal.summaryTargetAmount ?? goal.targetAmount ?? 0;
   const progress = goal.summaryProgress ?? 0;
@@ -99,32 +100,40 @@ export function GoalCard({ goal }: { goal: Goal }) {
   const isOffTrack = goal.statusHealth === "off_track";
   const isAchieved = goal.statusLifecycle === "achieved";
 
-  // Three health states drive the accent color:
+  // Health drives the accent color:
   //   positive  → success (green)
+  //   at risk   → warning (orange)
   //   negative  → destructive (red)
   //   unknown   → neutral (muted) — e.g. "not_applicable" from the backend
   //               (no target set, no projection yet, brand-new goal)
   const isPositive = isOnTrack || isAchieved;
-  const isNegative = isOffTrack || isAtRisk;
+  const isNegative = isOffTrack;
   const accentClass = isPositive
     ? "text-success"
-    : isNegative
-      ? "text-destructive"
-      : "text-muted-foreground";
+    : isAtRisk
+      ? "text-warning"
+      : isNegative
+        ? "text-destructive"
+        : "text-muted-foreground";
   const progressBarClass = isPositive
     ? "bg-success"
-    : isNegative
-      ? "bg-destructive"
-      : "bg-muted-foreground/50";
+    : isAtRisk
+      ? "bg-warning"
+      : isNegative
+        ? "bg-destructive"
+        : "bg-muted-foreground/50";
 
   // Only render the status badge for attention-worthy states.
-  let pill: { label: string; variant: "success-subtle" | "destructive-subtle" } | null = null;
+  let pill: {
+    label: string;
+    variant: "success-subtle" | "destructive-subtle" | "warning-subtle";
+  } | null = null;
   if (isAchieved) {
     pill = { label: t("goals:card.achieved"), variant: "success-subtle" };
   } else if (isOffTrack) {
     pill = { label: t("goals:card.off_track"), variant: "destructive-subtle" };
   } else if (isAtRisk) {
-    pill = { label: t("goals:card.at_risk"), variant: "destructive-subtle" };
+    pill = { label: t("goals:card.at_risk"), variant: "warning-subtle" };
   }
 
   const deadline = goal.targetDate ?? goal.projectedCompletionDate;
@@ -134,7 +143,11 @@ export function GoalCard({ goal }: { goal: Goal }) {
   const remaining = Math.max(0, target - current);
   const hasRemaining = target > 0 && remaining > 0;
 
-  const currentDisplay = isBalanceHidden ? "••••" : formatting.formatAmount(current, currency);
+  const currentDisplay = isBalanceHidden
+    ? "••••"
+    : hasCurrentValue
+      ? formatting.formatAmount(current, currency)
+      : "N/A";
   const targetDisplay = isBalanceHidden
     ? "••••"
     : target > 0
@@ -142,11 +155,15 @@ export function GoalCard({ goal }: { goal: Goal }) {
       : "—";
   const remainingDisplay = isBalanceHidden
     ? "••••"
-    : hasRemaining
-      ? formatting.formatCompactAmount(remaining, currency)
-      : "—";
+    : !hasCurrentValue
+      ? "N/A"
+      : hasRemaining
+        ? formatting.formatCompactAmount(remaining, currency)
+        : "—";
 
-  const progressPct = numberFormatting.formatPercent(progress, { digits: 1 });
+  const progressPct = hasCurrentValue
+    ? numberFormatting.formatPercent(progress, { digits: 1 })
+    : "N/A";
 
   return (
     <Link to={`/goals/${goal.id}`} className="group block">
@@ -217,15 +234,19 @@ export function GoalCard({ goal }: { goal: Goal }) {
             <div className="text-end">
               <div className="text-sm font-semibold tabular-nums">{remainingDisplay}</div>
               <div className="text-muted-foreground mt-0.5 text-xs">
-                {hasRemaining ? t("goals:card.remaining") : t("goals:card.target_met")}
+                {!hasCurrentValue || hasRemaining
+                  ? t("goals:card.remaining")
+                  : t("goals:card.target_met")}
               </div>
             </div>
           </div>
 
           {/* Progress bar */}
-          <div className="-mx-4 mt-2.5">
-            <ProgressBar progress={progress} fillClass={progressBarClass} />
-          </div>
+          {hasCurrentValue && (
+            <div className="-mx-4 mt-2.5">
+              <ProgressBar progress={progress} fillClass={progressBarClass} />
+            </div>
+          )}
         </div>
       </Card>
     </Link>

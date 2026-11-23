@@ -1,5 +1,7 @@
 "use client";
 
+import { useTranslation } from "react-i18next";
+
 import { useDirection } from "@base-ui/react/direction-provider";
 import {
   type ColumnDef,
@@ -47,9 +49,12 @@ import {
 } from "../formatting-provider";
 import {
   calendarDateFromLocalDate,
+  localizeDecimalString,
   parseDateTimeInTimezone,
   parseLocalizedDecimalString,
+  type NumberFormatting,
 } from "../../lib/formatting";
+import { copyText } from "../../lib/clipboard";
 import { isKeyboardEventComposing } from "../../lib/utils";
 
 const DEFAULT_ROW_HEIGHT = "short";
@@ -66,6 +71,10 @@ const DOMAIN_REGEX = /^[\w.-]+\.[a-z]{2,}(\/\S*)?$/i;
 const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}.*)?$/;
 const TRUTHY_BOOLEANS = new Set(["true", "1", "yes", "checked"]);
 const VALID_BOOLEANS = new Set(["true", "false", "1", "0", "yes", "no", "checked", "unchecked"]);
+
+// Shared across grid mounts so navigating to region settings does not lose the
+// meaning of the last grid copy. Clipboard text remains localized for other apps.
+let copiedNumberFormatting: { text: string; locale: string; numbers: NumberFormatting } | undefined;
 
 function toCalendarDateString(date: Date): string {
   const { year, month, day } = calendarDateFromLocalDate(date);
@@ -173,6 +182,7 @@ function useDataGrid<TData>({
   initialState,
   ...props
 }: UseDataGridProps<TData>) {
+  const { t } = useTranslation();
   const numberFormatting = useNumberFormatting();
   const dateFormatting = useDateFormatting();
   const { locale, timezone } = useLocalizationSettings();
@@ -610,6 +620,11 @@ function useDataGrid<TData>({
           let serializedValue = "";
           if (cellVariant === "file" || cellVariant === "multi-select") {
             serializedValue = value ? JSON.stringify(value) : "";
+          } else if (
+            cellVariant === "number" &&
+            (typeof value === "number" || typeof value === "string")
+          ) {
+            serializedValue = localizeDecimalString(String(value ?? ""), numberFormatting);
           } else if (value instanceof Date) {
             serializedValue = value.toISOString();
           } else {
@@ -650,16 +665,21 @@ function useDataGrid<TData>({
       .join("\n");
 
     try {
-      await navigator.clipboard.writeText(tsvData);
+      await copyText(tsvData);
+      copiedNumberFormatting = { text: tsvData, locale, numbers: numberFormatting };
 
       const currentState = store.getState();
       if (currentState.cutCells.size > 0) {
         store.setState("cutCells", new Set());
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to copy to clipboard");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("ui:dataGrid.copyFailed", "Failed to copy to clipboard"),
+      );
     }
-  }, [store]);
+  }, [store, t, numberFormatting, locale]);
 
   const onCellsCut = React.useCallback(async () => {
     if (propsRef.current.readOnly) return;
@@ -704,6 +724,11 @@ function useDataGrid<TData>({
           let serializedValue = "";
           if (cellVariant === "file" || cellVariant === "multi-select") {
             serializedValue = value ? JSON.stringify(value) : "";
+          } else if (
+            cellVariant === "number" &&
+            (typeof value === "number" || typeof value === "string")
+          ) {
+            serializedValue = localizeDecimalString(String(value ?? ""), numberFormatting);
           } else if (value instanceof Date) {
             serializedValue = value.toISOString();
           } else {
@@ -744,13 +769,18 @@ function useDataGrid<TData>({
       .join("\n");
 
     try {
-      await navigator.clipboard.writeText(tsvData);
+      await copyText(tsvData);
+      copiedNumberFormatting = { text: tsvData, locale, numbers: numberFormatting };
 
       store.setState("cutCells", new Set(selectedCellsArray));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to cut to clipboard");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("ui:dataGrid.cutFailed", "Failed to cut to clipboard"),
+      );
     }
-  }, [store, propsRef]);
+  }, [store, propsRef, t, numberFormatting, locale]);
 
   const restoreFocus = React.useCallback((element: HTMLDivElement | null) => {
     if (element && document.activeElement !== element) {
@@ -778,6 +808,17 @@ function useDataGrid<TData>({
           clipboardText = await navigator.clipboard.readText();
           if (!clipboardText) return;
         }
+
+        // Windows clipboard writes may convert LF to CRLF. Ignore that change
+        // when matching; other payloads use the current region's parser.
+        if (
+          copiedNumberFormatting?.text.replaceAll("\r\n", "\n") !==
+          clipboardText.replaceAll("\r\n", "\n")
+        ) {
+          copiedNumberFormatting = undefined;
+        }
+        const numberLocale = copiedNumberFormatting?.locale ?? locale;
+        const pasteNumbers = copiedNumberFormatting?.numbers ?? numberFormatting;
 
         const selectedCells = currentState.selectionState.selectedCells;
         const trimmedClipboard = clipboardText.trim();
@@ -807,8 +848,8 @@ function useDataGrid<TData>({
                 } else {
                   const num =
                     cellOpts?.variant === "number" && cellOpts.valueType === "string"
-                      ? parseLocalizedDecimalString(trimmedClipboard, locale)
-                      : numberFormatting.parseNumber(trimmedClipboard);
+                      ? parseLocalizedDecimalString(trimmedClipboard, numberLocale)
+                      : pasteNumbers.parseNumber(trimmedClipboard);
                   if (num === undefined) shouldSkip = true;
                   else processedValue = num;
                 }
@@ -993,8 +1034,8 @@ function useDataGrid<TData>({
                 } else {
                   const num =
                     cellOpts?.variant === "number" && cellOpts.valueType === "string"
-                      ? parseLocalizedDecimalString(pastedValue, locale)
-                      : numberFormatting.parseNumber(pastedValue);
+                      ? parseLocalizedDecimalString(pastedValue, numberLocale)
+                      : pasteNumbers.parseNumber(pastedValue);
                   if (num === undefined) shouldSkip = true;
                   else processedValue = num;
                 }
@@ -1236,9 +1277,7 @@ function useDataGrid<TData>({
 
           restoreFocus(dataGridRef.current);
         } else if (cellsSkipped > 0) {
-          toast.error(
-            `${cellsSkipped} cell${cellsSkipped !== 1 ? "s" : ""} skipped pasting for invalid data`,
-          );
+          toast.error(t("ui:dataGrid.cellsSkipped", { count: cellsSkipped }));
         }
 
         if (currentState.pasteDialog.open) {
@@ -1249,7 +1288,11 @@ function useDataGrid<TData>({
           });
         }
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Failed to paste. Please try again.");
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t("ui:dataGrid.pasteFailed", "Failed to paste. Please try again."),
+        );
       }
     },
     [
@@ -1263,6 +1306,7 @@ function useDataGrid<TData>({
       dateFormatting,
       locale,
       timezone,
+      t,
     ],
   );
 

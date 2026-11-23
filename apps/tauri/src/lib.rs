@@ -69,21 +69,8 @@ mod desktop {
 
     /// Sets up the application menu and its event handler.
     pub fn setup_menu(handle: &AppHandle, menu_bar_visible: bool) {
-        // macOS always keeps the menu: without it, Cmd+C, Cmd+V, Cmd+Z and
-        // Cmd+Q stop working, so the setting only applies on other platforms.
-        if menu_bar_visible || cfg!(target_os = "macos") {
-            match menu::create_menu(handle) {
-                Ok(menu) => {
-                    if let Err(e) = handle.set_menu(menu) {
-                        error!("Failed to set menu: {}", e);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to create menu: {}", e);
-                }
-            }
-        } else if let Err(e) = handle.remove_menu() {
-            error!("Failed to remove menu: {}", e);
+        if let Err(e) = menu::set_menu_visibility(handle, menu_bar_visible) {
+            error!("Failed to apply menu visibility: {}", e);
         }
 
         handle.on_menu_event(move |app, event| {
@@ -317,8 +304,12 @@ pub fn run() {
             commands::activity::delete_activity,
             commands::activity::get_transfer_pair_for_activity,
             commands::activity::find_transfer_match_candidates,
+            commands::activity::review_transfer_matches,
             commands::activity::save_internal_transfer_pair,
+            commands::activity::convert_to_internal_transfer,
+            commands::activity::review_convert_to_transfer_split_effects,
             commands::activity::link_transfer_activities,
+            commands::activity::link_transfer_pairs,
             commands::activity::unlink_transfer_activities,
             commands::activity::check_activities_import,
             commands::activity::preview_import_assets,
@@ -360,6 +351,7 @@ pub fn run() {
             commands::spending::upsert_categorization_rule,
             commands::spending::delete_categorization_rule,
             commands::spending::rerun_categorization_rules,
+            commands::spending::rerun_categorization_rules_detailed,
             commands::spending::list_rule_presets,
             commands::spending::import_rule_preset,
             commands::spending::remove_rule_preset,
@@ -381,6 +373,8 @@ pub fn run() {
             commands::spending::create_budget_group,
             commands::spending::update_budget_group,
             commands::spending::delete_budget_group,
+            commands::spending::review_category_merge,
+            commands::spending::merge_category,
             commands::spending::assign_category_to_group,
             commands::spending::reset_budget_groups,
             commands::spending::copy_budget_targets,
@@ -439,6 +433,8 @@ pub fn run() {
             commands::limits::update_contribution_limit,
             commands::limits::delete_contribution_limit,
             commands::limits::calculate_deposits_for_contribution_limit,
+            commands::limits::get_contribution_limit_details,
+            commands::limits::set_contribution_activity_excluded,
             commands::cloud_backups::cloud_backup_action,
             commands::cloud_backups::cloud_backup_capture,
             commands::cloud_backups::cloud_backup_download,
@@ -449,6 +445,7 @@ pub fn run() {
             commands::utilities::write_pending_export_text_file,
             commands::utilities::write_pending_export_file,
             commands::utilities::export_data_file,
+            commands::utilities::get_data_export_summary,
             commands::utilities::open_external_url,
             commands::utilities::get_app_info,
             commands::utilities::profile_transfer_file,

@@ -13,12 +13,12 @@ function normalizeDisplayAmount(value: number, fractionDigits: number) {
 }
 
 interface GainAmountProps extends React.HTMLAttributes<HTMLDivElement> {
-  value: number;
+  value: number | null | undefined;
   displayCurrency?: boolean;
   currency: string;
   displayDecimal?: boolean;
   showSign?: boolean;
-  /** Swap success/destructive coloring — useful for spending where "up" is bad. */
+  /** Swap gain/loss coloring — useful for spending where "up" is bad. */
   invertColor?: boolean;
 }
 
@@ -40,7 +40,8 @@ export function GainAmount({
   const useCurrencyStyle = displayCurrency && validCurrency;
   // Match formatAmount: quote units keep two decimals, currencies use their minor units.
   const fractionDigits = !displayDecimal ? 0 : quoteUnit ? 2 : amountFormatting.currencyFractionDigits(currency);
-  const displayValue = normalizeDisplayAmount(value, fractionDigits);
+  const available = value != null && Number.isFinite(value);
+  const displayValue = available ? normalizeDisplayAmount(value, fractionDigits) : 0;
 
   // Dynamic import for NumberFlow to avoid SSR issues
   const [NumberFlow, setNumberFlow] = React.useState<typeof import("@number-flow/react").default | null>(null);
@@ -51,7 +52,16 @@ export function GainAmount({
     });
   }, []);
 
+  if (!available) {
+    return (
+      <div className={cn("text-muted-foreground text-end", className)} {...props}>
+        {isBalanceHidden ? "••••" : "—"}
+      </div>
+    );
+  }
+
   const formatOptions: Format = {
+    useGrouping: true,
     ...(useCurrencyStyle ? { currency, currencyDisplay: "narrowSymbol" as const } : {}),
     style: useCurrencyStyle ? "currency" : "decimal",
     minimumFractionDigits: fractionDigits,
@@ -62,17 +72,20 @@ export function GainAmount({
 
   return (
     <div className={cn("flex flex-col items-end text-end text-sm", className)} {...props}>
+      {/* Left to right like the formatters' isolated amounts, so a right-to-left
+          page keeps the sign in front of the number. */}
       <div
+        dir="ltr"
         className={cn(
           "flex items-center",
           displayValue > 0
             ? invertColor
-              ? "text-destructive"
-              : "text-success"
+              ? "text-loss"
+              : "text-gain"
             : displayValue < 0
               ? invertColor
-                ? "text-success"
-                : "text-destructive"
+                ? "text-gain"
+                : "text-loss"
               : "text-foreground",
         )}
       >

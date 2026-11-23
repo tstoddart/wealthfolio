@@ -1,5 +1,13 @@
+import { getCategoryLabel } from "@/lib/taxonomy-labels";
 import { useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@wealthfolio/ui";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  useNumberFormatting,
+} from "@wealthfolio/ui";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { DriftReport, DriftRow } from "@/lib/types";
@@ -13,6 +21,7 @@ import { hasVisibleAllocation } from "./drift-row-utils";
 
 interface CurrentVsTargetCardProps {
   report: DriftReport;
+  taxonomyId: string;
   taxonomyLabel: string;
   targetLabel: string;
 }
@@ -23,17 +32,14 @@ function driftColor(row: DriftRow): string {
   return "text-allocation-under";
 }
 
-function formatTargetBps(bps: number): string {
-  const pct = bps / 100;
-  return Number.isInteger(pct) ? pct.toFixed(0) : pct.toFixed(1);
-}
-
 export function CurrentVsTargetCard({
   report,
+  taxonomyId,
   taxonomyLabel,
   targetLabel,
 }: CurrentVsTargetCardProps) {
   const { t } = useTranslation();
+  const numbers = useNumberFormatting();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const visibleRows = report.rows.filter(hasVisibleAllocation);
   const colorByCategory = useMemo(() => buildAllocationTargetColorMap(report.rows), [report.rows]);
@@ -52,6 +58,7 @@ export function CurrentVsTargetCard({
         <div className="grid items-center gap-6 pt-3 xl:grid-cols-[17.5rem_minmax(0,1fr)] xl:pt-5">
           <div className="mx-auto shrink-0">
             <AllocationDonut
+              taxonomyId={taxonomyId}
               rows={visibleRows}
               colorByCategory={colorByCategory}
               totalValue={report.totalValue}
@@ -97,7 +104,7 @@ export function CurrentVsTargetCard({
                         style={{ background: rowColor }}
                       />
                       <span className="text-foreground truncate text-xs font-semibold">
-                        {row.categoryName}
+                        {getCategoryLabel(t, taxonomyId, row.categoryId, row.categoryName)}
                       </span>
                     </div>
 
@@ -118,10 +125,12 @@ export function CurrentVsTargetCard({
                     </div>
 
                     <span className="text-foreground hidden text-end text-xs font-semibold tabular-nums md:block">
-                      {current.toFixed(1)}%
+                      {numbers.formatPercent(current / 100, { digits: 1 })}
                     </span>
                     <span className="text-muted-foreground hidden text-end text-xs font-medium tabular-nums md:block">
-                      {formatTargetBps(row.targetBps)}%
+                      {numbers.formatPercent(row.targetBps / 10000, {
+                        digits: Number.isInteger(row.targetBps / 100) ? 0 : 1,
+                      })}
                     </span>
                     <span
                       className={cn(
@@ -129,17 +138,23 @@ export function CurrentVsTargetCard({
                         driftColor(row),
                       )}
                     >
-                      {formatPp(row.driftBps)}
+                      {formatPp(row.driftBps, numbers)}
                     </span>
 
                     <div className="text-muted-foreground text-2xs col-span-2 flex justify-between tabular-nums md:hidden">
                       <span>
                         {t("allocation:vsTarget.current")}{" "}
-                        <span className="text-foreground">{current.toFixed(1)}%</span>
+                        <span className="text-foreground">
+                          {numbers.formatPercent(current / 100, { digits: 1 })}
+                        </span>
                       </span>
                       <span>
                         {t("allocation:vsTarget.target")}{" "}
-                        <span className="text-foreground">{formatTargetBps(row.targetBps)}%</span>
+                        <span className="text-foreground">
+                          {numbers.formatPercent(row.targetBps / 10000, {
+                            digits: Number.isInteger(row.targetBps / 100) ? 0 : 1,
+                          })}
+                        </span>
                       </span>
                     </div>
                   </div>

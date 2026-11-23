@@ -1,23 +1,23 @@
-import { devices, expect, test, type Page } from "@playwright/test";
-import { BASE_URL, completeOnboardingIfNeeded, gotoAppPath } from "./helpers";
+import { expect, test, type Page } from "./fixtures";
+import {
+  BASE_URL,
+  completeOnboardingIfNeeded,
+  gotoAppPath,
+  trackPortfolioUpdates,
+  waitForPortfolioUpdates,
+} from "./helpers";
 
 // The phone layout stacks the screens of Holdings and Settings: a pushed screen
 // slides over the one it came from, which stays mounted, and back returns to it
 // as it was left. Runs on an iPhone-sized screen with real touch input, so the
-// browser's touch handling applies; `?swipe=app` (development builds only)
+// browser's touch handling applies; `?swipe=app` (development and E2E builds)
 // turns on the swipe back the iOS app has.
 const IPHONE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
 
 test.use({ viewport: { width: 390, height: 844 }, userAgent: IPHONE_UA, hasTouch: true });
 
-test.beforeEach(async ({ browser, page }) => {
-  // The iPhone app's onboarding has one step fewer than the shared helper walks
-  // through, so a fresh profile is onboarded from a desktop browser first.
-  // Contexts from `browser` take this file's phone options unless told otherwise.
-  const desktop = await browser.newContext({ ...devices["Desktop Chrome"] });
-  await completeOnboardingIfNeeded(await desktop.newPage());
-  await desktop.close();
+test.beforeEach(async ({ page }) => {
   await completeOnboardingIfNeeded(page);
 });
 
@@ -70,7 +70,7 @@ async function touchDrag(page: Page, from: { x: number; y: number }, to: { x: nu
   await cdp.detach();
 }
 
-// Exact: "Back" alone would also match the list's "Backup & Export" row.
+// Exact: "Back" alone would also match the list's "Backup & export" row.
 const backButton = (page: Page) =>
   page.getByRole("button", { name: "Back", exact: true }).locator("visible=true").first();
 
@@ -212,7 +212,7 @@ test("a link to a nested page opens with its parent pages under it", async ({ pa
 });
 
 /** An account holding one manual asset, once its holding is computed. */
-async function seedHolding(page: Page) {
+async function seedHolding(page: Page, { quantity = 10, unitPrice = 100 } = {}) {
   const runId = Date.now().toString(36);
   const account = await page.request.post(`${BASE_URL}/api/v1/accounts`, {
     data: {
@@ -236,8 +236,8 @@ async function seedHolding(page: Page) {
       currency: "USD",
       fee: 0,
       needsReview: false,
-      quantity: 10,
-      unitPrice: 100,
+      quantity,
+      unitPrice,
       asset: {
         name: "Stack asset",
         symbol,
@@ -255,7 +255,9 @@ async function seedHolding(page: Page) {
         const response = await page.request.post(`${BASE_URL}/api/v1/holdings/list/query`, {
           data: { filter: { type: "account", accountId }, includeClosed: true },
         });
-        const holdings = (await response.json()) as { instrument?: { id: string } }[];
+        const { holdings } = (await response.json()) as {
+          holdings: { instrument?: { id: string } }[];
+        };
         return holdings.some((holding) => holding.instrument?.id === assetId);
       },
       { timeout: 60_000 },
@@ -268,9 +270,14 @@ async function seedHolding(page: Page) {
 test("a holding opens over the Holdings list and back returns to it", async ({ page }) => {
   test.setTimeout(120_000);
   const { assetId, symbol } = await seedHolding(page);
+  await trackPortfolioUpdates(page);
   await gotoAppPath(page, "/holdings?swipe=app");
   const holding = page.getByText(symbol, { exact: true }).locator("visible=true").first();
   await expect(holding).toBeVisible({ timeout: 15_000 });
+  // Gestures below must not race the refetch that the load's portfolio update
+  // triggers when it finishes.
+  await waitForPortfolioUpdates(page);
+  await expect(holding).toBeVisible();
   const list = (await screens(page)).top;
   const listIndex = await historyIndex(page);
 
@@ -294,6 +301,58 @@ test("a holding opens over the Holdings list and back returns to it", async ({ p
   await expect.poll(() => pathOf(page)).toBe("/holdings");
   // The screen leaving slides out first.
   await expect.poll(async () => (await screens(page)).top).toBe(list);
+});
+
+test("a holding opened at a larger text size: no ring on its title, quantity and value apart", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const { assetId, symbol } = await seedHolding(page, {
+    quantity: 1316.55607257,
+    unitPrice: 155.33,
+  });
+  const previous = (await (await page.request.get(`${BASE_URL}/api/v1/settings`)).json()) as {
+    textSize?: string;
+  };
+  try {
+    await page.request.put(`${BASE_URL}/api/v1/settings`, { data: { textSize: "large" } });
+    await gotoAppPath(page, "/holdings?swipe=app");
+    const holding = page.getByText(symbol, { exact: true }).locator("visible=true").first();
+    await expect(holding).toBeVisible({ timeout: 15_000 });
+    await holding.tap();
+    await expect.poll(() => pathOf(page)).toBe(`/holdings/${encodeURIComponent(assetId)}`);
+    await page.waitForTimeout(600);
+
+    // Focus moves to the holding's title for screen readers, without a focus ring around it.
+    expect(
+      await page.evaluate(() => {
+        const focused = document.activeElement;
+        return focused?.tagName === "H1"
+          ? getComputedStyle(focused).outlineStyle
+          : focused?.tagName;
+      }),
+    ).toBe("none");
+
+    const header = page
+      .locator('[data-slot="card-title"]')
+      .filter({ hasText: "1,316.55607257" })
+      .locator("visible=true")
+      .first();
+    await expect(header).toContainText("204,500.65");
+    const layout = await header.evaluate((title) => {
+      const [quantity, value] = [...title.children].map((child) => child.getBoundingClientRect());
+      const card = title.closest('[data-slot="card"]')!.getBoundingClientRect();
+      return {
+        apart: value.left >= quantity.right + 8 || value.top >= quantity.bottom,
+        inside: value.right <= card.right,
+      };
+    });
+    expect(layout).toEqual({ apart: true, inside: true });
+  } finally {
+    await page.request.put(`${BASE_URL}/api/v1/settings`, {
+      data: { textSize: previous.textSize ?? "default" },
+    });
+  }
 });
 
 test("a holding opened from an account keeps the Dashboard as the current tab", async ({

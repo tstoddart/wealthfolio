@@ -22,7 +22,6 @@ const createMockAccount = (overrides: Partial<Account> = {}): Account => ({
   id: "account-1",
   name: "Test Account",
   accountType: "SECURITIES",
-  balance: 10000,
   currency: "USD",
   isDefault: true,
   isActive: true,
@@ -252,7 +251,7 @@ describe("activity-utils", () => {
       expect(savedAsset(row)).toEqual({ symbol: "RY", exchangeMic: "XNAS" });
     });
 
-    it("sends a saved row's picked id and type, but not the picked asset, with a pasted symbol", () => {
+    it("sends a saved row's stored id, but not the picked id and type, with a pasted symbol", () => {
       const row = editSymbol(
         pickedAapl({
           id: "existing-1",
@@ -266,14 +265,27 @@ describe("activity-utils", () => {
         }),
         "TD",
       );
-      // The id and type main sends, so the server prices the update as on main.
-      // It then drops the id because it does not match TD.
+      // The server drops the stored id because it does not name TD.
       expect(savedAsset(row)).toEqual({
-        id: "SEC:AAPL:XNAS",
+        id: "OPT:AAPL250117C00150000",
         symbol: "TD",
         exchangeMic: "XNAS",
-        instrumentType: "EQUITY",
       });
+    });
+
+    it("does not send a saved row's stored instrument type with a pasted symbol", () => {
+      // With CRYPTO, the server would create KO as a crypto asset.
+      const savedBtc = toLocalTransaction(
+        createMockTransaction({
+          id: "existing-btc",
+          assetId: "CRYPTO:BTC",
+          assetSymbol: "BTC",
+          instrumentType: "CRYPTO",
+        }),
+      );
+      const row = editSymbol(savedBtc, "KO");
+      expect(row.instrumentType).toBeUndefined();
+      expect(savedAsset(row)).toEqual({ id: "CRYPTO:BTC", symbol: "KO" });
     });
 
     it("keeps an instrument type the user set on a saved row", () => {
@@ -307,7 +319,7 @@ describe("activity-utils", () => {
       expect(row).toMatchObject({ instrumentType: "OPTION", pendingInstrumentType: "OPTION" });
     });
 
-    it("keeps a duplicate's copied instrument type, but not one picked on it", () => {
+    it("drops a duplicate's copied instrument type, but not one the user set", () => {
       // As handleDuplicate copies a saved option row.
       const duplicate: LocalTransaction = {
         ...toLocalTransaction(
@@ -316,11 +328,10 @@ describe("activity-utils", () => {
         id: "temp-duplicate",
         isNew: true,
       };
-      expect(editSymbol(duplicate, "AAPL250117C00160000").instrumentType).toBe("OPTION");
+      expect(editSymbol(duplicate, "AAPL250117C00160000").instrumentType).toBeUndefined();
 
-      const row = editSymbol({ ...duplicate, ...aaplPick }, "MSFT");
-      expect(row.instrumentType).toBeUndefined();
-      expect(savedAsset(row)).toEqual({ symbol: "MSFT", exchangeMic: "XNAS" });
+      const userSet = edit(duplicate, "instrumentType", "OPTION");
+      expect(editSymbol(userSet, "AAPL250117C00160000").instrumentType).toBe("OPTION");
     });
 
     it("keeps the pick and the values around it when only the case changes", () => {
@@ -1345,6 +1356,38 @@ describe("activity-utils", () => {
   });
 
   describe("applyTransactionUpdate", () => {
+    it("re-rounds an automatic income amount when the row's currency changes", () => {
+      // 0.5 × 40.12345 = 20.061725: 20.06 in USD, 20.062 in KWD.
+      const drip = createMockTransaction({
+        activityType: ActivityType.DIVIDEND,
+        subtype: "DRIP",
+        quantity: "0.5",
+        unitPrice: "40.12345",
+        amount: "20.06",
+        fee: null,
+        isNew: true,
+      });
+      const update = (field: "currency" | "accountId", value: string) =>
+        applyTransactionUpdate({
+          transaction: drip,
+          field,
+          value,
+          accountLookup: new Map([
+            ["account-kwd", createMockAccount({ id: "account-kwd", currency: "KWD" })],
+          ]),
+          assetCurrencyLookup: new Map(),
+          resolveTransactionCurrency: createCurrencyResolver(new Map(), "USD"),
+          fallbackCurrency: "USD",
+        });
+
+      expect(update("currency", "KWD").amount).toBe("20.062");
+      // A new row follows its account's currency.
+      expect(update("accountId", "account-kwd")).toMatchObject({
+        currency: "KWD",
+        amount: "20.062",
+      });
+    });
+
     it("should clear amount when value is null", () => {
       const accountLookup = new Map<string, { id: string; name: string; currency: string }>([
         ["account-1", { id: "account-1", name: "Test Account", currency: "USD" }],

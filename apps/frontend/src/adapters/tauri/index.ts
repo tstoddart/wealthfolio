@@ -111,6 +111,7 @@ export * from "../shared/taxonomies";
 
 // Alternative Assets Commands
 export * from "../shared/alternative-assets";
+export * from "../shared/exports";
 
 // Asset Logo Commands
 export * from "../shared/asset-logos";
@@ -237,6 +238,7 @@ export {
   listenFileDropCancelled,
   listenPortfolioUpdateStart,
   listenPortfolioUpdateComplete,
+  listenGoalSummariesUpdated,
   listenDatabaseRestored,
   listenDeviceSyncRestore,
   listenPortfolioUpdateError,

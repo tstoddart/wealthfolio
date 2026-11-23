@@ -1,5 +1,11 @@
 import { useSettings } from "@/hooks/use-settings";
-import { ACTIVITY_SUBTYPES, ActivityType } from "@/lib/constants";
+import {
+  ACTIVITY_SUBTYPES,
+  ActivityType,
+  DECIMAL_PRECISION,
+  isLiabilityAccountType,
+} from "@/lib/constants";
+import { cryptoMoneyDecimals } from "@/lib/currency-decimals";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
@@ -15,6 +21,7 @@ import {
   AccountSelect,
   AdvancedOptionsSection,
   AmountInput,
+  ChargeLinesField,
   createValidatedSubmit,
   DatePicker,
   FormSection,
@@ -25,7 +32,12 @@ import {
 } from "./fields";
 import { calculateIncomeFinalAmount } from "@/lib/activity-final-amount";
 import { invalidTypeError, requiredError } from "@/lib/zod-errors";
-import { assetMetadataSchema } from "./schemas";
+import {
+  assetMetadataSchema,
+  createChargeLineFields,
+  createChargeLinesRefinement,
+} from "./schemas";
+import { useIncomeAmounts } from "./use-income-amounts";
 import { Spinner } from "@wealthfolio/ui";
 
 // Non-UI sentinel for the "cash" income mode (not a DB value; internal only).
@@ -58,6 +70,8 @@ export const createInterestFormSchema = (t?: TFunction) =>
         .min(0, {
           message: msg(t, "activity:form.err_amount_non_negative", "Amount must be non-negative."),
         }),
+      // Cash interest's amount before tax: input only, never saved.
+      grossAmount: z.coerce.number().optional(),
       tax: z.coerce
         .number({
           error: invalidTypeError(
@@ -115,8 +129,23 @@ export const createInterestFormSchema = (t?: TFunction) =>
       symbolQuoteCcy: z.string().nullable().optional(),
       symbolInstrumentType: z.string().nullable().optional(),
       assetMetadata: assetMetadataSchema,
+      // Fee and tax lines (metadata.charges)
+      ...createChargeLineFields(t),
     })
+    .superRefine(createChargeLinesRefinement(t))
     .superRefine((data, ctx) => {
+      if (data.grossAmount !== undefined && (data.tax ?? 0) > data.grossAmount) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["tax"],
+          message: msg(
+            t,
+            "activity:form.err_charges_exceed_amount_before_tax",
+            "Tax and fees can't be more than the amount before tax.",
+          ),
+        });
+      }
+
       const isStakingReward = data.subtype === ACTIVITY_SUBTYPES.STAKING_REWARD;
       if (!isStakingReward) return;
 
@@ -211,7 +240,7 @@ export function InterestForm({
       activityDate: new Date(),
       symbol: null,
       amount: undefined,
-      tax: 0,
+      tax: undefined,
       quantity: undefined,
       unitPrice: undefined,
       comment: null,
@@ -228,6 +257,7 @@ export function InterestForm({
   const { getFieldState, getValues, setValue } = form;
   const accountId = watch("accountId");
   const currency = watch("currency");
+  const symbolInstrumentType = watch("symbolInstrumentType");
   const subtype = watch("subtype");
   const quantity = watch("quantity");
   const unitPrice = watch("unitPrice");
@@ -240,11 +270,12 @@ export function InterestForm({
     const q = Number(quantity);
     const p = Number(unitPrice);
     if (amountWasEdited.current) return;
-    const computedAmount = calculateIncomeFinalAmount(
+    const computedAmount = calculateIncomeFinalAmount({
       quantity,
       unitPrice,
-      getValues("symbolInstrumentType"),
-    );
+      instrumentType: symbolInstrumentType,
+      currency,
+    });
     if (computedAmount === undefined) return;
     const currentAmount = Number(getValues("amount"));
     const quantityIsDirty = getFieldState("quantity").isDirty;
@@ -261,7 +292,16 @@ export function InterestForm({
         });
       }
     }
-  }, [getFieldState, getValues, isStakingReward, quantity, setValue, unitPrice]);
+  }, [
+    currency,
+    getFieldState,
+    getValues,
+    isStakingReward,
+    quantity,
+    setValue,
+    symbolInstrumentType,
+    unitPrice,
+  ]);
 
   const handleInterestModeChange = (value: string) => {
     setValue("subtype", value === INCOME_MODE_CASH ? null : value, {
@@ -280,6 +320,12 @@ export function InterestForm({
     [accounts, accountId],
   );
   const accountCurrency = selectedAccount?.currency;
+  const moneyDecimals = cryptoMoneyDecimals(selectedAccount?.accountType, symbolInstrumentType);
+  // Credit-card interest is a charge, not cash received.
+  const isReceivedInterest =
+    !isStakingReward && !isLiabilityAccountType(selectedAccount?.accountType);
+  // Interest received in cash is entered before tax.
+  const incomeAmounts = useIncomeAmounts(form, { enabled: isReceivedInterest });
 
   const handleSubmit = createValidatedSubmit(form, async (data) => {
     await onSubmit(data);
@@ -355,31 +401,60 @@ export function InterestForm({
                 data-testid="fmv-per-unit-input"
                 label={t("activity:form.label_fmv_per_unit")}
                 labelHelpText={fmvHelpText}
-                maxDecimalPlaces={4}
+                maxDecimalPlaces={DECIMAL_PRECISION}
                 currency={currency}
               />
             </div>
           )}
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <AmountInput
-              name="amount"
-              data-testid={isStakingReward ? "interest-amount-input" : undefined}
-              label={
-                isStakingReward
-                  ? t("activity:form.label_interest_amount")
-                  : t("activity:form.label_amount")
-              }
-              currency={currency}
-              onValueChange={() => {
-                amountWasEdited.current = true;
-              }}
-            />
-            <AmountInput
-              name="tax"
+            {isReceivedInterest ? (
+              <AmountInput
+                name="grossAmount"
+                label={t("activity:form.label_amount_before_tax")}
+                currency={currency}
+                onValueChange={incomeAmounts.onGrossAmountChange}
+                maxDecimalPlaces={moneyDecimals}
+              />
+            ) : (
+              <AmountInput
+                name="amount"
+                data-testid={isStakingReward ? "interest-amount-input" : undefined}
+                label={
+                  isStakingReward
+                    ? t("activity:form.label_interest_amount")
+                    : t("activity:form.label_amount")
+                }
+                currency={currency}
+                onValueChange={() => {
+                  amountWasEdited.current = true;
+                }}
+                maxDecimalPlaces={moneyDecimals}
+              />
+            )}
+            <ChargeLinesField
+              totalName="tax"
+              linesName="taxLines"
+              category="tax"
               label={t("activity:form.label_withholding_tax")}
               currency={currency}
+              onValueChange={incomeAmounts.onChargeChange}
+              onTotalChange={incomeAmounts.onChargeChange}
+              maxDecimalPlaces={moneyDecimals}
             />
+            {isReceivedInterest && (
+              <AmountInput
+                name="amount"
+                label={t("activity:form.received_amount")}
+                labelHelpText={t("activity:form.help_total_credit")}
+                currency={currency}
+                onValueChange={(value) => {
+                  amountWasEdited.current = true;
+                  incomeAmounts.onReceivedAmountChange(value);
+                }}
+                maxDecimalPlaces={moneyDecimals}
+              />
+            )}
           </div>
         </FormSection>
 

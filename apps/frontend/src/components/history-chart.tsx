@@ -1,6 +1,6 @@
-import { useHapticFeedback } from "@/hooks";
 import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
-import { useIsMobileViewport } from "@/hooks/use-platform";
+import { useChartScrubHaptic } from "@/hooks/use-chart-scrub-haptic";
+import { useIsMobileViewport, useViewportBelow } from "@/hooks/use-platform";
 import { formatDate } from "@/lib/utils";
 import { AmountDisplay, useDateFormatting } from "@wealthfolio/ui";
 import { ChartConfig, ChartContainer } from "@wealthfolio/ui/components/ui/chart";
@@ -11,15 +11,16 @@ import type { MouseHandlerDataParam } from "recharts/types/synchronisation/types
 import {
   HistoryChartActiveDot,
   HistoryChartMarkerShape,
+  lineColorAt,
   type HistoryChartMarkerTone,
   type RechartsActiveDotProps,
   type RechartsMarkerShapeProps,
 } from "./history-chart-marker";
 import { getAutomaticHistoryChartScale, type HistoryChartScaleMode } from "./history-chart-scale";
 
-const CHART_SCRUB_HAPTIC_INTERVAL_MS = 80;
-
 export interface HistoryChartData {
+  /** An unknown value must form a gap, never a zero or a line between neighbours. */
+  isUnavailable?: boolean;
   date: string;
   totalValue: number;
   netContribution: number;
@@ -43,6 +44,8 @@ interface HistoryChartProps {
   netContributionMaxDomainSpanRatio?: number;
   /** Keeps narrow ranges from zooming too aggressively. Ratio is relative to the visible center. */
   minDomainSpanRatio?: number;
+  /** The line's colour at or above zero, e.g. `var(--investments)`; below zero it is --loss. */
+  color?: string;
 }
 
 interface TooltipEntry {
@@ -58,6 +61,7 @@ interface TooltipBaseProps {
 interface CustomTooltipProps extends TooltipBaseProps {
   isBalanceHidden: boolean;
   isChartHovered: boolean;
+  color: string;
 }
 
 const CustomTooltip = ({
@@ -65,6 +69,7 @@ const CustomTooltip = ({
   payload,
   isBalanceHidden,
   isChartHovered,
+  color,
 }: CustomTooltipProps) => {
   const dateFormatting = useDateFormatting();
 
@@ -85,12 +90,12 @@ const CustomTooltip = ({
   const tvPayload = totalValueData?.payload;
   const ncPayload = netContributionData?.payload;
 
-  if (!tvPayload) {
+  if (!tvPayload || tvPayload.isUnavailable) {
     return null;
   }
 
   const netContributionPayload = ncPayload ?? tvPayload;
-  const tooltipColor = tvPayload.totalValue >= 0 ? "var(--success)" : "var(--destructive)";
+  const tooltipColor = lineColorAt(tvPayload.totalValue, color);
 
   return (
     <div className="bg-popover pointer-events-none grid grid-cols-1 gap-1.5 rounded-md border p-2 shadow-md">
@@ -134,7 +139,7 @@ const CustomTooltip = ({
 };
 
 export function HistoryChart({
-  data,
+  data: sourceData,
   isLoading,
   snapshotDates,
   markerLabels,
@@ -143,19 +148,28 @@ export function HistoryChart({
   scaleMode,
   netContributionMaxDomainSpanRatio,
   minDomainSpanRatio,
+  color = "var(--gain)",
 }: HistoryChartProps) {
   const { t } = useTranslation();
-  const { triggerHaptic } = useHapticFeedback();
+  const scrubHaptic = useChartScrubHaptic();
   const { isBalanceHidden } = useBalancePrivacy();
   const [isChartHovered, setIsChartHovered] = useState(false);
   const [hoveredMarker, setHoveredMarker] = useState(false);
   const isMobile = useIsMobileViewport();
+  // globals.css clips flex overflow through 1024px; useViewportBelow is exclusive.
+  const keepTooltipInside = useViewportBelow(1025);
   const isTouchScrubbingRef = useRef(false);
-  const lastHapticLabelRef = useRef<string | number | undefined>(undefined);
-  const lastHapticAtRef = useRef(0);
   const id = useId();
   const fillGradientId = `historyFill-${id}`;
   const strokeGradientId = `historyStroke-${id}`;
+  const data = useMemo(() => sourceData.filter((point) => !point.isUnavailable), [sourceData]);
+  const plotData = useMemo(
+    () =>
+      sourceData.map((point) =>
+        point.isUnavailable ? { ...point, totalValue: null, netContribution: null } : point,
+      ),
+    [sourceData],
+  );
   const scaleConfig = useMemo(
     () =>
       getAutomaticHistoryChartScale(data, {
@@ -242,25 +256,12 @@ export function HistoryChart({
     if (!isMobile || !isTouchScrubbingRef.current || !chartState.isTooltipActive) {
       return;
     }
-
-    const activeLabel = chartState.activeLabel;
-    if (activeLabel == null || activeLabel === lastHapticLabelRef.current) {
-      return;
-    }
-
-    const now = Date.now();
-    if (now - lastHapticAtRef.current < CHART_SCRUB_HAPTIC_INTERVAL_MS) {
-      return;
-    }
-
-    lastHapticLabelRef.current = activeLabel;
-    lastHapticAtRef.current = now;
-    triggerHaptic();
+    scrubHaptic.tick(chartState.activeLabel);
   };
 
   const resetTouchScrubState = () => {
     isTouchScrubbingRef.current = false;
-    lastHapticLabelRef.current = undefined;
+    scrubHaptic.reset();
   };
 
   const handleChartMove = (chartState: MouseHandlerDataParam) => {
@@ -276,7 +277,7 @@ export function HistoryChart({
   return (
     <ChartContainer config={chartConfig} className="h-full w-full" data-no-swipe-drag>
       <AreaChart
-        data={data}
+        data={plotData}
         stackOffset="sign"
         style={{
           cursor: showMarkers && isChartHovered && hoveredMarker ? "pointer" : undefined,
@@ -317,40 +318,40 @@ export function HistoryChart({
           <linearGradient id={fillGradientId} x1="0" y1="0" x2="0" y2="1">
             {allNegative ? (
               <>
-                <stop offset="5%" stopColor="var(--destructive)" stopOpacity={0.2} />
-                <stop offset="70%" stopColor="var(--destructive)" stopOpacity={0.12} />
-                <stop offset="100%" stopColor="var(--destructive)" stopOpacity={0} />
+                <stop offset="5%" stopColor="var(--loss)" stopOpacity={0.2} />
+                <stop offset="70%" stopColor="var(--loss)" stopOpacity={0.12} />
+                <stop offset="100%" stopColor="var(--loss)" stopOpacity={0} />
               </>
             ) : allPositive ? (
               <>
-                <stop offset="5%" stopColor="var(--success)" stopOpacity={0.2} />
-                <stop offset="70%" stopColor="var(--success)" stopOpacity={0.12} />
-                <stop offset="100%" stopColor="var(--success)" stopOpacity={0} />
+                <stop offset="5%" stopColor={color} stopOpacity={0.2} />
+                <stop offset="70%" stopColor={color} stopOpacity={0.12} />
+                <stop offset="100%" stopColor={color} stopOpacity={0} />
               </>
             ) : (
               <>
-                <stop offset="0%" stopColor="var(--success)" stopOpacity={0.2} />
-                <stop offset={zeroPercent} stopColor="var(--success)" stopOpacity={0.05} />
-                <stop offset={zeroPercent} stopColor="var(--destructive)" stopOpacity={0.05} />
-                <stop offset="100%" stopColor="var(--destructive)" stopOpacity={0.2} />
+                <stop offset="0%" stopColor={color} stopOpacity={0.2} />
+                <stop offset={zeroPercent} stopColor={color} stopOpacity={0.05} />
+                <stop offset={zeroPercent} stopColor="var(--loss)" stopOpacity={0.05} />
+                <stop offset="100%" stopColor="var(--loss)" stopOpacity={0.2} />
               </>
             )}
           </linearGradient>
           <linearGradient id={strokeGradientId} x1="0" y1="0" x2="0" y2="1">
             {allNegative ? (
-              <stop offset="0%" stopColor="var(--destructive)" />
+              <stop offset="0%" stopColor="var(--loss)" />
             ) : allPositive ? (
-              <stop offset="0%" stopColor="var(--success)" />
+              <stop offset="0%" stopColor={color} />
             ) : (
               <>
-                <stop offset={zeroPercent} stopColor="var(--success)" />
-                <stop offset={zeroPercent} stopColor="var(--destructive)" />
+                <stop offset={zeroPercent} stopColor={color} />
+                <stop offset={zeroPercent} stopColor="var(--loss)" />
               </>
             )}
           </linearGradient>
         </defs>
         <Tooltip
-          position={isMobile ? { y: 60 } : { y: -20 }}
+          position={keepTooltipInside ? { y: 60 } : { y: -20 }}
           cursor={{ stroke: "var(--border)", strokeWidth: 1, pointerEvents: "none" }}
           wrapperStyle={{ pointerEvents: "none" }}
           content={(props) => (
@@ -358,6 +359,7 @@ export function HistoryChart({
               {...(props as unknown as TooltipBaseProps)}
               isBalanceHidden={isBalanceHidden}
               isChartHovered={isChartHovered}
+              color={color}
             />
           )}
         />
@@ -369,16 +371,18 @@ export function HistoryChart({
           domain={scaleConfig.domain}
         />
         <Area
-          isAnimationActive={true}
           animationDuration={300}
           animationEasing="ease-out"
-          connectNulls={true}
+          connectNulls={false}
           type="monotone"
           dataKey="totalValue"
           stroke={`url(#${strokeGradientId})`}
           activeDot={(props: RechartsActiveDotProps & { payload?: HistoryChartData }) =>
             showMarkers && props.payload?.date && markerDateSet.has(props.payload.date) ? null : (
-              <HistoryChartActiveDot {...props} stroke="var(--success)" />
+              <HistoryChartActiveDot
+                {...props}
+                stroke={lineColorAt(props.payload?.totalValue ?? 0, color)}
+              />
             )
           }
           fillOpacity={1}
@@ -387,10 +391,9 @@ export function HistoryChart({
         />
         {scaleConfig.showNetContribution && (
           <Area
-            isAnimationActive={true}
             animationDuration={300}
             animationEasing="ease-out"
-            connectNulls={true}
+            connectNulls={false}
             type="monotone"
             dataKey="netContribution"
             stroke="var(--muted-foreground)"
@@ -412,7 +415,12 @@ export function HistoryChart({
                 return marker ? (
                   <HistoryChartMarkerShape {...props} variant="activity" {...marker} />
                 ) : (
-                  <HistoryChartMarkerShape {...props} variant="snapshot" value={point.value} />
+                  <HistoryChartMarkerShape
+                    {...props}
+                    variant="snapshot"
+                    value={point.value}
+                    color={color}
+                  />
                 );
               }}
             />
@@ -422,7 +430,7 @@ export function HistoryChart({
             x={singleDataPoint.date}
             y={singleDataPoint.totalValue}
             r={4}
-            fill={singleDataPoint.totalValue >= 0 ? "var(--success)" : "var(--destructive)"}
+            fill={lineColorAt(singleDataPoint.totalValue, color)}
             stroke="var(--background)"
             strokeWidth={2}
           />
